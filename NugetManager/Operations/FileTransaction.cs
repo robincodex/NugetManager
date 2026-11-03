@@ -30,6 +30,8 @@ internal sealed class FileTransaction : IAsyncDisposable
 
     public string ManifestPath => Path.Combine(_directory, ManifestName);
 
+    public bool HasConflicts => _manifest.Files.Any(f => f.Conflict);
+
     public IReadOnlyList<PlannedFile> Files =>
         _manifest.Files.Select(f => new PlannedFile(f.Path, _originals[f.Path]?.ToArray())).ToList();
 
@@ -100,6 +102,13 @@ internal sealed class FileTransaction : IAsyncDisposable
             }
         }
         _manifest.Phase = "Applied";
+        await SaveAsync(_directory, _manifest).ConfigureAwait(false);
+    }
+
+    /// <summary>Opens another write window (e.g. restore). Its changes are judged by the validator until recorded.</summary>
+    public async Task BeginWriteWindowAsync()
+    {
+        _manifest.Phase = "Writing";
         await SaveAsync(_directory, _manifest).ConfigureAwait(false);
     }
 
@@ -190,6 +199,7 @@ internal sealed class FileTransaction : IAsyncDisposable
         Dictionary<string, byte[]?> originals, bool trustUnrecorded = true)
     {
         var results = new List<FileRecovery>();
+        var windowOpen = manifest.Phase is "Prepared" or "Writing";
         foreach (var entry in manifest.Files)
         {
             FileRecovery result;
@@ -206,8 +216,8 @@ internal sealed class FileTransaction : IAsyncDisposable
                 {
                     result = new FileRecovery(entry.Path, RecoveryStatus.Conflict, entry.Message ?? "文件存在外部修改，未自动撤回。");
                 }
-                else if (entry.OwnedHash is not null ? currentHash == entry.OwnedHash
-                         : trustUnrecorded && (validator is null || validator(entry.Path, original, current)))
+                else if (currentHash == entry.OwnedHash
+                         || (trustUnrecorded && windowOpen && (validator is null || validator(entry.Path, original, current))))
                 {
                     await WriteOriginalAsync(entry.Path, original).ConfigureAwait(false);
                     result = new FileRecovery(entry.Path, RecoveryStatus.Restored, null);

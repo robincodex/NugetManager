@@ -32,6 +32,9 @@ internal interface ISdkClient
 
     Task RestoreAsync(IReadOnlyList<ProjectDescriptor> projects, bool lockedMode, CancellationToken ct);
 
+    /// <summary>Restores without creating or rewriting lock files (locked mode when one exists).</summary>
+    Task RestorePreservingLockFilesAsync(IReadOnlyList<ProjectEvaluation> evaluations, CancellationToken ct);
+
     Task<PackageListOutput> ListOutdatedAsync(ProjectDescriptor project, bool includePrerelease, CancellationToken ct);
 
     Task<SearchOutput> SearchAsync(string workingDirectory, string query, int skip, int take, bool includePrerelease, bool exactMatch, string? source, CancellationToken ct);
@@ -347,6 +350,14 @@ internal sealed partial class SdkClient : ISdkClient
             args.Add("-p:RestorePackagesWithLockFile=false");
         }
         await RunCheckedAsync(dir, args, LongTimeout, ct).ConfigureAwait(false);
+    }
+
+    public async Task RestorePreservingLockFilesAsync(IReadOnlyList<ProjectEvaluation> evaluations, CancellationToken ct)
+    {
+        foreach (var evaluation in evaluations)
+        {
+            await ReadOnlyRestoreAsync(evaluation.Project, evaluation, ct).ConfigureAwait(false);
+        }
     }
 
     public async Task RestoreAsync(IReadOnlyList<ProjectDescriptor> projects, bool lockedMode, CancellationToken ct)

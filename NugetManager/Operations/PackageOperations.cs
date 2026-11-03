@@ -1,0 +1,361 @@
+using System.Xml;
+using System.Xml.Linq;
+using NugetManager.Domain;
+using NugetManager.Sdk;
+
+namespace NugetManager.Operations;
+
+internal interface IPackageOperations
+{
+    Task<OperationPlan> PlanAsync(Workspace workspace, IReadOnlyList<PackageChange> changes, CancellationToken ct);
+
+    Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<string> progress, CancellationToken ct);
+}
+
+internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory) : IPackageOperations
+{
+    public string RecoveryDirectory { get; } = recoveryDirectory;
+
+    public async Task<OperationPlan> PlanAsync(Workspace workspace, IReadOnlyList<PackageChange> changes, CancellationToken ct)
+    {
+        var evaluations = await EvaluateAllAsync(workspace, ct).ConfigureAwait(false);
+        var warnings = new List<string>();
+        var blockers = new List<string>();
+        var files = new List<string>();
+        var affected = new List<ProjectDescriptor>();
+        var commands = new List<PlannedCommand>();
+        var centralCommands = new Dictionary<(string File, string Id), int>();
+
+        foreach (var (project, error) in evaluations.Where(e => e.Value.Error is not null).Select(e => (e.Key, e.Value.Error)))
+        {
+            warnings.Add($"项目 {project.Name} 无法求值，若它也使用相关包或集中版本，本次修改可能同样影响它：{error}");
+        }
+
+        foreach (var change in changes)
+        {
+            var project = workspace.Projects.FirstOrDefault(p => PathUtil.AreEqual(p.Path, change.ProjectPath));
+            if (project is null || !evaluations.TryGetValue(project, out var entry) || entry.Evaluation is null)
+            {
+                blockers.Add($"{change.PackageId}：项目 {Path.GetFileName(change.ProjectPath)} 不在当前工作区或无法求值。");
+                continue;
+            }
+            var evaluation = entry.Evaluation;
+            var refs = evaluation.References.Where(r => string.Equals(r.PackageId, change.PackageId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (change.Action != PackageAction.Uninstall
+                && (change.Version is null || !NuGetVersionComparer.TryParse(change.Version, out _)))
+            {
+                blockers.Add($"{change.PackageId}：目标版本无效（{change.Version ?? "未指定"}）。");
+                continue;
+            }
+            AddUnique(affected, project);
+            AddUnique(files, project.Path);
+
+            switch (change.Action)
+            {
+                case PackageAction.Upgrade:
+                case PackageAction.Uninstall:
+                    if (refs.Count == 0)
+                    {
+                        blockers.Add($"{change.PackageId}：{project.Name} 没有直接引用该包。");
+                        continue;
+                    }
+                    if (refs.FirstOrDefault(r => !r.IsWritable) is { } blocked)
+                    {
+                        blockers.Add($"{change.PackageId}（{project.Name}）：{blocked.WriteBlockReason}");
+                        continue;
+                    }
+                    break;
+                case PackageAction.Install:
+                    if (refs.Count > 0)
+                    {
+                        blockers.Add(refs.FirstOrDefault(r => !r.IsWritable) is { } existing
+                            ? $"{change.PackageId}（{project.Name}）：已存在引用，{existing.WriteBlockReason}"
+                            : $"{change.PackageId}：{project.Name} 已直接引用该包，请使用升级或切换版本。");
+                        continue;
+                    }
+                    break;
+            }
+
+            if (change.Action == PackageAction.Uninstall)
+            {
+                commands.Add(new PlannedCommand(PackageAction.Uninstall, project.Path, change.PackageId, null, $"从 {project.Name} 卸载 {change.PackageId}"));
+                continue;
+            }
+
+            var version = change.Version!;
+            var current = refs.Select(r => r.VersionExpression).FirstOrDefault(v => v is not null);
+            if (current is not null && NuGetVersionComparer.TryParse(current, out _) && NuGetVersionComparer.IsMajorChange(current, version))
+            {
+                AddUnique(warnings, $"{change.PackageId} 将从 {current} 升级到 {version}，跨越主版本，可能包含不兼容变更。");
+            }
+            if (current is not null && NuGetVersionComparer.TryParse(current, out _) && !NuGetVersionComparer.IsNewer(version, current)
+                && !string.Equals(current, version, StringComparison.OrdinalIgnoreCase))
+            {
+                AddUnique(warnings, $"{change.PackageId} 将从 {current} 降级到 {version}。");
+            }
+
+            var centralFile = evaluation.CentralPackageManagement
+                ? refs.Select(r => r.CentralVersionPath).FirstOrDefault(p => p is not null)
+                  ?? (evaluation.CentralVersions.TryGetValue(change.PackageId, out var defined) ? defined : evaluation.CentralPackagesFile)
+                : null;
+            if (evaluation.CentralPackageManagement && centralFile is null)
+            {
+                blockers.Add($"{change.PackageId}（{project.Name}）：启用了集中版本管理，但找不到 Directory.Packages.props。");
+                continue;
+            }
+
+            if (centralFile is null)
+            {
+                commands.Add(new PlannedCommand(change.Action, project.Path, change.PackageId, version,
+                    $"{Verb(change.Action)} {project.Name} 的 {change.PackageId} → {version}"));
+                continue;
+            }
+
+            AddUnique(files, Path.GetFullPath(centralFile));
+            var sharedBy = evaluations.Values
+                .Where(e => e.Evaluation is { } other && other.CentralVersions.TryGetValue(change.PackageId, out var path)
+                    && PathUtil.AreEqual(path, centralFile)
+                    && other.References.Any(r => string.Equals(r.PackageId, change.PackageId, StringComparison.OrdinalIgnoreCase)))
+                .Select(e => e.Evaluation!.Project)
+                .ToList();
+            foreach (var other in sharedBy)
+            {
+                AddUnique(affected, other);
+            }
+            var outside = sharedBy.Where(p => !changes.Any(c => PathUtil.AreEqual(c.ProjectPath, p.Path)
+                    && string.Equals(c.PackageId, change.PackageId, StringComparison.OrdinalIgnoreCase)))
+                .Select(p => p.Name).ToList();
+            if (outside.Count > 0)
+            {
+                AddUnique(warnings, $"{change.PackageId} 的版本由 {Path.GetFileName(centralFile)} 集中管理，修改还会影响：{string.Join("、", outside)}。");
+            }
+
+            if (change.Action == PackageAction.Install)
+            {
+                commands.Add(new PlannedCommand(PackageAction.Install, project.Path, change.PackageId, version,
+                    $"在 {project.Name} 安装 {change.PackageId} {version}（集中版本）"));
+                // Later upgrades of the same entry must not write a second, conflicting version.
+                centralCommands[(Path.GetFullPath(centralFile).ToUpperInvariant(), change.PackageId.ToUpperInvariant())] = commands.Count - 1;
+                continue;
+            }
+
+            var key = (Path.GetFullPath(centralFile).ToUpperInvariant(), change.PackageId.ToUpperInvariant());
+            if (centralCommands.TryGetValue(key, out var index))
+            {
+                var existing = commands[index];
+                if (!string.Equals(existing.Version, version, StringComparison.OrdinalIgnoreCase))
+                {
+                    var max = NuGetVersionComparer.Instance.Compare(version, existing.Version) > 0 ? version : existing.Version!;
+                    AddUnique(warnings, $"{change.PackageId} 共享同一集中版本条目，所选目标版本不同，统一使用 {max}。");
+                    commands[index] = existing with { Version = max, Description = $"更新集中版本 {change.PackageId} → {max}" };
+                }
+                continue;
+            }
+            centralCommands[key] = commands.Count;
+            commands.Add(new PlannedCommand(PackageAction.Upgrade, project.Path, change.PackageId, version,
+                $"更新集中版本 {change.PackageId} → {version}（{Path.GetFileName(centralFile)}）"));
+        }
+
+        var lockFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var affectedEvaluations = new List<ProjectEvaluation>();
+        foreach (var project in affected)
+        {
+            if (evaluations.TryGetValue(project, out var e) && e.Evaluation is { } evaluation)
+            {
+                affectedEvaluations.Add(evaluation);
+                foreach (var lockFile in evaluation.LockFilePaths)
+                {
+                    lockFiles.Add(lockFile);
+                    AddUnique(files, lockFile);
+                }
+            }
+        }
+
+        var fingerprints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            fingerprints[file] = await FingerprintAsync(file, ct).ConfigureAwait(false);
+        }
+
+        return new OperationPlan(changes, files, affected, warnings, blockers)
+        {
+            Commands = commands,
+            Fingerprints = fingerprints,
+            PackageIds = changes.Select(c => c.PackageId).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            LockFiles = lockFiles,
+            AffectedEvaluations = affectedEvaluations,
+        };
+    }
+
+    public async Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<string> progress, CancellationToken ct)
+    {
+        if (plan.Blockers.Count > 0)
+        {
+            throw new InvalidOperationException("修改预览中存在阻止项，不能执行：\n" + string.Join("\n", plan.Blockers));
+        }
+        if (plan.Commands.Count == 0)
+        {
+            throw new InvalidOperationException("没有需要执行的修改。");
+        }
+        foreach (var (file, hash) in plan.Fingerprints)
+        {
+            if (await FingerprintAsync(file, ct).ConfigureAwait(false) != hash)
+            {
+                throw new PlanStaleException($"{Path.GetFileName(file)} 在预览后被修改，请重新预览后再确认。");
+            }
+        }
+
+        progress.Report("正在备份将被修改的文件…");
+        await using var transaction = await FileTransaction.BeginAsync(plan.Files, RecoveryDirectory, ct,
+            (path, before, after) => IsExpectedChange(plan, path, before, after),
+            string.Join("；", plan.Commands.Select(c => c.Description))).ConfigureAwait(false);
+        try
+        {
+            foreach (var command in plan.Commands)
+            {
+                ct.ThrowIfCancellationRequested();
+                progress.Report(command.Description + "…");
+                if (command.Action == PackageAction.Uninstall)
+                {
+                    await sdk.RemovePackageAsync(command.ProjectPath, command.PackageId, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    await sdk.AddPackageAsync(command.ProjectPath, command.PackageId, command.Version!, ct).ConfigureAwait(false);
+                }
+            }
+            await RecordAsync(transaction, ct).ConfigureAwait(false);
+
+            progress.Report($"正在还原 {plan.AffectedProjects.Count} 个受影响项目…");
+            ct.ThrowIfCancellationRequested();
+            await transaction.BeginWriteWindowAsync().ConfigureAwait(false);
+            await sdk.RestoreAsync(plan.AffectedProjects, lockedMode: false, ct).ConfigureAwait(false);
+            await RecordAsync(transaction, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+            progress.Report("修改已完成。");
+            return new OperationResult(OperationStatus.Succeeded, null, []);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            var error = ex is OperationCanceledException ? "操作已取消，已撤回本次修改。" : ex.Message;
+            progress.Report("操作失败，正在撤回…");
+            var recovery = await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            var restored = recovery.All(r => r.Status == RecoveryStatus.Restored);
+            if (restored)
+            {
+                try
+                {
+                    await sdk.RestorePreservingLockFilesAsync(plan.AffectedEvaluations, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception restoreError) when (restoreError is SdkCommandException or SdkOutputException or ProcessTimeoutException)
+                {
+                    error += $"\n文件已撤回，但重新还原原配置失败，请手动执行 dotnet restore：{restoreError.Message}";
+                }
+            }
+            return new OperationResult(restored ? OperationStatus.RolledBack : OperationStatus.RecoveryRequired, error, recovery)
+            {
+                RecoveryManifestPath = restored ? null : transaction.ManifestPath,
+            };
+        }
+    }
+
+    private static async Task RecordAsync(FileTransaction transaction, CancellationToken ct)
+    {
+        await transaction.RecordOwnedChangesAsync(CancellationToken.None).ConfigureAwait(false);
+        if (transaction.HasConflicts)
+        {
+            throw new IOException("执行期间检测到其他程序修改了相关文件，已停止并撤回。");
+        }
+        ct.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// A project/props change is ours only if, after removing the package elements this plan targets (and any
+    /// ItemGroup left empty), the document is unchanged. Lock files are regenerated wholesale by restore.
+    /// </summary>
+    internal static bool IsExpectedChange(OperationPlan plan, string path, byte[]? before, byte[]? after)
+    {
+        if (plan.LockFiles.Contains(path))
+        {
+            return true;
+        }
+        if (before is null || after is null)
+        {
+            return false;
+        }
+        var a = Strip(before, plan.PackageIds);
+        var b = Strip(after, plan.PackageIds);
+        return a is not null && b is not null && XNode.DeepEquals(a, b);
+    }
+
+    private static XElement? Strip(byte[] bytes, IReadOnlySet<string> ids)
+    {
+        try
+        {
+            using var stream = new MemoryStream(bytes);
+            using var reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, IgnoreWhitespace = true });
+            var root = XElement.Load(reader);
+            root.Descendants()
+                .Where(e => e.Name.LocalName is "PackageReference" or "PackageVersion" && ids.Contains((string?)e.Attribute("Include") ?? ""))
+                .ToList()
+                .ForEach(e => e.Remove());
+            root.Descendants().Where(e => e.Name.LocalName == "ItemGroup" && !e.HasElements && !e.HasAttributes).ToList().ForEach(e => e.Remove());
+            return root;
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<Dictionary<ProjectDescriptor, (ProjectEvaluation? Evaluation, string? Error)>> EvaluateAllAsync(Workspace workspace, CancellationToken ct)
+    {
+        var results = new (ProjectEvaluation? Evaluation, string? Error)[workspace.Projects.Count];
+        using var gate = new SemaphoreSlim(4);
+        await Task.WhenAll(workspace.Projects.Select(async (project, i) =>
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                results[i] = (await sdk.EvaluateAsync(project, ct).ConfigureAwait(false), null);
+            }
+            catch (Exception ex) when (ex is SdkCommandException or SdkOutputException or ProcessTimeoutException)
+            {
+                results[i] = (null, ex.Message);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        })).ConfigureAwait(false);
+        return workspace.Projects.Select((p, i) => (p, results[i])).ToDictionary(x => x.p, x => x.Item2);
+    }
+
+    private static async Task<string> FingerprintAsync(string path, CancellationToken ct) =>
+        FileTransaction.Hash(File.Exists(path) ? await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false) : null);
+
+    private static string Verb(PackageAction action) => action switch
+    {
+        PackageAction.Install => "安装到",
+        PackageAction.Uninstall => "卸载",
+        _ => "升级",
+    };
+
+    private static void AddUnique(List<string> list, string value)
+    {
+        if (!list.Contains(value, StringComparer.OrdinalIgnoreCase))
+        {
+            list.Add(value);
+        }
+    }
+
+    private static void AddUnique(List<ProjectDescriptor> list, ProjectDescriptor project)
+    {
+        if (!list.Any(p => PathUtil.AreEqual(p.Path, project.Path)))
+        {
+            list.Add(project);
+        }
+    }
+}
