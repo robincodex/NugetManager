@@ -19,6 +19,7 @@ internal sealed class MainWindow : Window
 
     private readonly WorkspaceController _controller;
     private readonly string? _initialDirectory;
+    private readonly string? _recoveryDirectory;
     private readonly object _pendingGate = new();
     private WorkspaceViewState? _pending;
     private bool _renderScheduled;
@@ -46,13 +47,15 @@ internal sealed class MainWindow : Window
     private object? _middleKey;
     private object? _detailsKey;
     private CancellationTokenSource? _busyCts;
+    private bool _applying;
     private CancellationTokenSource? _searchCts;
     private CancellationTokenSource? _detailsCts;
 
-    private MainWindow(WorkspaceController controller, string? initialDirectory)
+    private MainWindow(WorkspaceController controller, string? initialDirectory, string? recoveryDirectory)
     {
         _controller = controller;
         _initialDirectory = initialDirectory;
+        _recoveryDirectory = recoveryDirectory;
         _state = controller.State;
         this.Title("NuGet 包管理器").Resizable(1280, 800, minWidth: 980, minHeight: 560);
         Content = BuildLayout();
@@ -60,10 +63,18 @@ internal sealed class MainWindow : Window
         this.OnLoaded(() =>
         {
             Render(_controller.State);
-            if (!string.IsNullOrWhiteSpace(_initialDirectory))
+            Fire(async () =>
             {
-                Fire(() => OpenDirectoryAsync(_initialDirectory!, null));
-            }
+                await CheckRecoveryAsync();
+                if (!string.IsNullOrWhiteSpace(_initialDirectory))
+                {
+                    await OnUiAsync(async () =>
+                    {
+                        await OpenDirectoryAsync(_initialDirectory!, null);
+                        return true;
+                    });
+                }
+            });
         });
         this.OnClosed(() =>
         {
@@ -74,7 +85,66 @@ internal sealed class MainWindow : Window
         });
     }
 
-    public static Window Create(WorkspaceController controller, string? initialDirectory = null) => new MainWindow(controller, initialDirectory);
+    public static Window Create(WorkspaceController controller, string? initialDirectory = null, string? recoveryDirectory = null) =>
+        new MainWindow(controller, initialDirectory, recoveryDirectory);
+
+    /// <summary>Offers recovery for operations that did not finish last time. Files change only on an explicit choice.</summary>
+    private async Task CheckRecoveryAsync()
+    {
+        if (_recoveryDirectory is null)
+        {
+            return;
+        }
+        IReadOnlyList<PendingRecovery> pending;
+        try
+        {
+            pending = await RecoveryCoordinator.FindAsync(_recoveryDirectory, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            await OnUiAsync(async () =>
+            {
+                await MessageBox.NotifyAsync("无法检查未完成的操作", PromptIconKind.Warning, $"{_recoveryDirectory}{Environment.NewLine}{ex.Message}", this);
+                return true;
+            });
+            return;
+        }
+
+        foreach (var item in pending)
+        {
+            var choice = await OnUiAsync(() => OperationDialog.ShowRecoveryAsync(this, item));
+            try
+            {
+                if (choice == RecoveryChoice.Recover)
+                {
+                    var results = await RecoveryCoordinator.RecoverAsync(item, CancellationToken.None);
+                    await OnUiAsync(async () =>
+                    {
+                        await OperationDialog.ShowRecoveryResultAsync(this, item, results);
+                        return true;
+                    });
+                }
+                else if (choice == RecoveryChoice.Discard)
+                {
+                    var confirmed = await OnUiAsync(() => MessageBox.ConfirmAsync("保留当前文件并删除这条备份记录？", PromptIconKind.Warning,
+                        "删除后将不能再用该备份撤回这次操作。备份目录：" + item.BackupDirectory, this));
+                    if (confirmed)
+                    {
+                        await RecoveryCoordinator.DiscardAsync(item, CancellationToken.None);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+            {
+                await OnUiAsync(async () =>
+                {
+                    await MessageBox.NotifyAsync("恢复未完成，文件保持现状", PromptIconKind.Error,
+                        $"{ex.Message}{Environment.NewLine}备份目录：{item.BackupDirectory}", this);
+                    return true;
+                });
+            }
+        }
+    }
 
     private Element BuildLayout()
     {
@@ -663,6 +733,24 @@ internal sealed class MainWindow : Window
 
     /// <summary>Preview → confirmation dialog → execution, with failure details shown afterwards.</summary>
     private async Task ApplyAsync(Func<CancellationToken, Task<OperationPlan>> preview)
+    {
+        // Preparing the plan takes seconds; repeated clicks must not queue a second operation.
+        if (_applying)
+        {
+            return;
+        }
+        _applying = true;
+        try
+        {
+            await ApplyCoreAsync(preview);
+        }
+        finally
+        {
+            _applying = false;
+        }
+    }
+
+    private async Task ApplyCoreAsync(Func<CancellationToken, Task<OperationPlan>> preview)
     {
         var plan = await preview(CancellationToken.None);
         var confirmed = await OnUiAsync(() => OperationDialog.ConfirmAsync(this, plan, _controller.State.Scope));

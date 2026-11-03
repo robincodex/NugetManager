@@ -41,8 +41,14 @@ static class Program
 
         try
         {
+            Application.DispatcherUnhandledException += e =>
+            {
+                e.Handled = true;
+                NativeMessageBox.Show("发生未处理的错误，当前操作可能未完成：" + Environment.NewLine + e.Exception.Message,
+                    "NuGet 包管理器", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
+            };
             var app = Application.Create().UseWin32().UseDirect2D();
-            app.BuildMainWindow(() => MainWindow.Create(controller, directory)).Run();
+            app.BuildMainWindow(() => MainWindow.Create(controller, directory, recoveryDirectory)).Run();
             return 0;
         }
         catch (Exception ex)

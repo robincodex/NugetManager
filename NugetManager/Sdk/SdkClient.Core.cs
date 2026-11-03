@@ -229,30 +229,31 @@ internal sealed partial class SdkClient : ISdkClient
     public async Task<PackageInventory> ReadInventoryAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation>? evaluations, CancellationToken ct)
     {
         var results = new (List<PackageOccurrence>? Items, string? Error)[workspace.Projects.Count];
-        await ParallelForAsync(workspace.Projects.Count, async i =>
-        {
-            results[i] = await TryListAsync(workspace.Projects[i], ct).ConfigureAwait(false);
-        }, ct).ConfigureAwait(false);
 
-        // Restores run sequentially because projects may share referenced projects' obj folders.
-        for (var i = 0; i < results.Length; i++)
+        // Always restore first: "package list --no-restore" happily reports stale assets after an
+        // external edit, and a restore whose inputs are unchanged is a cheap no-op. Restores run
+        // sequentially because projects may share referenced projects' obj folders.
+        var restoreErrors = new string?[workspace.Projects.Count];
+        for (var i = 0; i < restoreErrors.Length; i++)
         {
-            if (results[i].Items is not null)
-            {
-                continue;
-            }
             var project = workspace.Projects[i];
             var evaluation = evaluations?.FirstOrDefault(e => PathUtil.AreEqual(e.Project.Path, project.Path));
             try
             {
                 await ReadOnlyRestoreAsync(project, evaluation, ct).ConfigureAwait(false);
-                results[i] = await TryListAsync(project, ct).ConfigureAwait(false);
             }
             catch (SdkCommandException ex)
             {
-                results[i] = (null, ex.Message);
+                restoreErrors[i] = ex.Message;
             }
         }
+
+        await ParallelForAsync(workspace.Projects.Count, async i =>
+        {
+            results[i] = restoreErrors[i] is { } error
+                ? (null, error)
+                : await TryListAsync(workspace.Projects[i], ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
 
         var declarations = new Dictionary<(string, string, string), string>();
         foreach (var e in evaluations ?? [])

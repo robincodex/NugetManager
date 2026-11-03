@@ -140,6 +140,22 @@ public class PackageInventoryTests
     }
 
     [Fact]
+    public async Task ExternallyEditedProjectIsNotReadFromStaleAssets()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        ws.AddPackage("Example.Json", "1.0.0");
+        ws.AddPackage("Example.Json", "2.0.0");
+        var project = ws.WriteProject("App/App.csproj", "net10.0", ("Example.Json", "1.0.0"));
+        await ws.RestoreAsync(project);
+        ws.WriteProject("App/App.csproj", "net10.0", ("Example.Json", "2.0.0"));
+
+        var inventory = await ws.CreateSdk().ReadInventoryAsync(WorkspaceOf(ws, project), CancellationToken.None);
+
+        Assert.Empty(inventory.Problems);
+        Assert.Equal("2.0.0", inventory.Occurrences.Single(p => p.PackageId == "Example.Json").ResolvedVersion);
+    }
+
+    [Fact]
     public async Task TransitiveDependencyIsClassified()
     {
         await using var ws = await TestWorkspace.CreateAsync();
