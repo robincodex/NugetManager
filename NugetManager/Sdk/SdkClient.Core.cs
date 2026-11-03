@@ -1,0 +1,595 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using System.Text.RegularExpressions;
+using System.Xml;
+using System.Xml.Linq;
+using NugetManager.Domain;
+
+namespace NugetManager.Sdk;
+
+internal sealed class SdkCommandException(string command, int exitCode, string output)
+    : Exception($"命令失败（退出码 {exitCode}）：dotnet {command}\n{output}".TrimEnd())
+{
+    public string Command { get; } = command;
+    public int ExitCode { get; } = exitCode;
+    public string Output { get; } = output;
+}
+
+internal sealed class SdkOutputException(string message, Exception? inner = null) : Exception(message, inner);
+
+internal sealed class SdkCapabilityException(string message, Exception? inner = null) : Exception(message, inner);
+
+internal interface ISdkClient
+{
+    IReadOnlyDictionary<string, string?>? Environment { get; }
+
+    Task<string> VerifyCapabilitiesAsync(string directory, CancellationToken ct);
+
+    Task<ProjectEvaluation> EvaluateAsync(ProjectDescriptor project, CancellationToken ct);
+
+    Task<PackageInventory> ReadInventoryAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation>? evaluations, CancellationToken ct);
+
+    Task RestoreAsync(IReadOnlyList<ProjectDescriptor> projects, bool lockedMode, CancellationToken ct);
+
+    Task<PackageListOutput> ListOutdatedAsync(ProjectDescriptor project, bool includePrerelease, CancellationToken ct);
+
+    Task<SearchOutput> SearchAsync(string workingDirectory, string query, int skip, int take, bool includePrerelease, bool exactMatch, string? source, CancellationToken ct);
+
+    Task AddPackageAsync(string projectPath, string packageId, string version, CancellationToken ct);
+
+    Task RemovePackageAsync(string projectPath, string packageId, CancellationToken ct);
+
+    Task<string?> GetGlobalPackagesFolderAsync(string directory, CancellationToken ct);
+}
+
+internal sealed partial class SdkClient : ISdkClient
+{
+    private static readonly TimeSpan ShortTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan EvalTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan LongTimeout = TimeSpan.FromMinutes(10);
+    private const int MaxParallel = 4;
+
+    public IReadOnlyDictionary<string, string?>? Environment => _environment;
+
+    public async Task<string> VerifyCapabilitiesAsync(string directory, CancellationToken ct)
+    {
+        ProcessResult result;
+        try
+        {
+            result = await RunRawAsync(directory, ["--version"], ShortTimeout, ct).ConfigureAwait(false);
+        }
+        catch (ProcessStartException ex)
+        {
+            throw new SdkCapabilityException("未找到 dotnet 命令。请安装 .NET 10 SDK 并确保 dotnet 位于 PATH 中。", ex);
+        }
+        var version = result.Stdout.Trim();
+        if (result.ExitCode != 0 || !NuGetVersionComparer.TryParse(version, out var parsed))
+        {
+            var detail = Redact((result.Stdout + "\n" + result.Stderr).Trim());
+            throw new SdkCapabilityException(
+                $"无法在此工作目录解析可用的 .NET SDK（可能由 global.json 固定了未安装的版本）。需要具备 .NET 10 命令能力的 SDK。\n{detail}");
+        }
+        if (parsed.Major < 10)
+        {
+            throw new SdkCapabilityException(
+                $"当前工作目录使用的 .NET SDK 为 {version}（受 global.json 影响时以其为准），需要 .NET 10 或更高版本的 SDK 才能使用 package list/search/add/remove 的结构化输出。");
+        }
+        return version;
+    }
+
+    public async Task<ProjectEvaluation> EvaluateAsync(ProjectDescriptor project, CancellationToken ct)
+    {
+        var dir = Path.GetDirectoryName(project.Path)!;
+        string[] outerArgs =
+        [
+            "msbuild", project.Path, "-nologo",
+            "-getProperty:TargetFramework", "-getProperty:TargetFrameworks",
+            "-getProperty:ManagePackageVersionsCentrally", "-getProperty:DirectoryPackagesPropsPath",
+            "-getProperty:NuGetLockFilePath", "-getProperty:RestorePackagesWithLockFile",
+            "-getItem:PackageReference", "-getItem:PackageVersion",
+        ];
+        var outer = await RunJsonAsync(dir, outerArgs, EvalTimeout, SdkJsonContext.Default.MsBuildOutput, ct).ConfigureAwait(false);
+        var props = outer.Properties ?? [];
+        var frameworks = Split(Get(props, "TargetFrameworks"));
+        if (frameworks.Count == 0)
+        {
+            frameworks = Split(Get(props, "TargetFramework"));
+        }
+        if (frameworks.Count == 0)
+        {
+            throw new SdkOutputException($"无法确定项目 {project.Name} 的目标框架。");
+        }
+
+        var perFramework = new List<(string Framework, MsBuildOutput Output)>();
+        if (frameworks.Count == 1)
+        {
+            perFramework.Add((frameworks[0], outer));
+        }
+        else
+        {
+            foreach (var fw in frameworks)
+            {
+                string[] args =
+                [
+                    "msbuild", project.Path, "-nologo", $"-p:TargetFramework={fw}",
+                    "-getProperty:ManagePackageVersionsCentrally",
+                    "-getItem:PackageReference", "-getItem:PackageVersion",
+                ];
+                perFramework.Add((fw, await RunJsonAsync(dir, args, EvalTimeout, SdkJsonContext.Default.MsBuildOutput, ct).ConfigureAwait(false)));
+            }
+        }
+
+        var cpm = IsTrue(Get(props, "ManagePackageVersionsCentrally"));
+        var centralFile = NullIfEmpty(Get(props, "DirectoryPackagesPropsPath"));
+        var inspector = new DeclarationInspector();
+        var references = new List<EvaluatedReference>();
+        foreach (var (fw, output) in perFramework)
+        {
+            var fwCpm = IsTrue(Get(output.Properties ?? props, "ManagePackageVersionsCentrally"));
+            var versions = Items(output, "PackageVersion")
+                .GroupBy(i => Get(i, "Identity") ?? "", StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+            foreach (var item in Items(output, "PackageReference"))
+            {
+                var id = Get(item, "Identity");
+                if (string.IsNullOrEmpty(id))
+                {
+                    continue;
+                }
+                references.Add(BuildReference(project, fw, fwCpm, id, item, versions, inspector));
+            }
+        }
+
+        var lockPath = NullIfEmpty(Get(props, "NuGetLockFilePath"));
+        lockPath = lockPath is null ? Path.Combine(dir, "packages.lock.json") : Path.GetFullPath(Path.Combine(dir, lockPath));
+        var lockFiles = File.Exists(lockPath) || IsTrue(Get(props, "RestorePackagesWithLockFile")) ? new[] { lockPath } : [];
+
+        var central = Items(outer, "PackageVersion")
+            .Where(i => !string.IsNullOrEmpty(Get(i, "Identity")))
+            .GroupBy(i => Get(i, "Identity")!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => Normalize(Get(g.Last(), "DefiningProjectFullPath")) ?? "", StringComparer.OrdinalIgnoreCase);
+
+        return new ProjectEvaluation(project, frameworks, references, lockFiles)
+        {
+            CentralPackageManagement = cpm,
+            CentralPackagesFile = cpm && centralFile is not null ? Path.GetFullPath(centralFile) : null,
+            CentralVersions = central,
+        };
+    }
+
+    private static EvaluatedReference BuildReference(ProjectDescriptor project, string framework, bool cpm, string id,
+        Dictionary<string, string> item, Dictionary<string, Dictionary<string, string>> versions, DeclarationInspector inspector)
+    {
+        var declaration = Normalize(Get(item, "DefiningProjectFullPath")) ?? project.Path;
+        var versionOverride = NullIfEmpty(Get(item, "VersionOverride"));
+        var itemVersion = NullIfEmpty(Get(item, "Version"));
+        string? centralPath = null;
+        var expression = itemVersion;
+        if (cpm && versionOverride is null && versions.TryGetValue(id, out var pv))
+        {
+            centralPath = Normalize(Get(pv, "DefiningProjectFullPath"));
+            expression = NullIfEmpty(Get(pv, "Version"));
+        }
+        else if (versionOverride is not null)
+        {
+            expression = versionOverride;
+        }
+
+        string? block = null;
+        if (IsTrue(Get(item, "IsImplicitlyDefined")))
+        {
+            block = "SDK 自动引用，由 SDK 管理，不能直接升级或卸载。";
+        }
+        else if (!PathUtil.AreEqual(declaration, project.Path))
+        {
+            block = $"引用声明位于导入文件 {Path.GetFileName(declaration)}（{declaration}），为避免产生重复引用，请在该文件中手动修改。";
+        }
+        else if (versionOverride is not null)
+        {
+            block = "引用使用 VersionOverride 覆盖集中版本，第一版不自动修改覆盖策略。";
+        }
+        else
+        {
+            var raw = inspector.Inspect(declaration, "PackageReference", id);
+            if (raw.Problem is not null)
+            {
+                block = raw.Problem;
+            }
+            else if (cpm)
+            {
+                if (centralPath is null)
+                {
+                    block = "已启用集中版本管理，但未找到对应的 PackageVersion 条目。";
+                }
+                else if (raw.HasVersion)
+                {
+                    block = "集中版本管理下引用仍声明了 Version，请先修正项目配置。";
+                }
+                else
+                {
+                    var centralRaw = inspector.Inspect(centralPath, "PackageVersion", id);
+                    block = centralRaw.Problem is null ? null : "集中版本条目：" + centralRaw.Problem;
+                }
+            }
+        }
+
+        return new EvaluatedReference(id, framework, declaration, centralPath, expression, versionOverride, block is null, block)
+        {
+            ProjectPath = project.Path,
+        };
+    }
+
+    public Task<PackageInventory> ReadInventoryAsync(Workspace workspace, CancellationToken ct) =>
+        ReadInventoryAsync(workspace, null, ct);
+
+    public async Task<PackageInventory> ReadInventoryAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation>? evaluations, CancellationToken ct)
+    {
+        var results = new (List<PackageOccurrence>? Items, string? Error)[workspace.Projects.Count];
+        await ParallelForAsync(workspace.Projects.Count, async i =>
+        {
+            results[i] = await TryListAsync(workspace.Projects[i], ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
+
+        // Restores run sequentially because projects may share referenced projects' obj folders.
+        for (var i = 0; i < results.Length; i++)
+        {
+            if (results[i].Items is not null)
+            {
+                continue;
+            }
+            var project = workspace.Projects[i];
+            var evaluation = evaluations?.FirstOrDefault(e => PathUtil.AreEqual(e.Project.Path, project.Path));
+            try
+            {
+                await ReadOnlyRestoreAsync(project, evaluation, ct).ConfigureAwait(false);
+                results[i] = await TryListAsync(project, ct).ConfigureAwait(false);
+            }
+            catch (SdkCommandException ex)
+            {
+                results[i] = (null, ex.Message);
+            }
+        }
+
+        var declarations = new Dictionary<(string, string, string), string>();
+        foreach (var e in evaluations ?? [])
+        {
+            foreach (var r in e.References)
+            {
+                declarations[(e.Project.Path.ToUpperInvariant(), r.Framework.ToUpperInvariant(), r.PackageId.ToUpperInvariant())] = r.DeclarationPath;
+            }
+        }
+
+        var occurrences = new List<PackageOccurrence>();
+        var problems = new List<ProjectProblem>();
+        for (var i = 0; i < results.Length; i++)
+        {
+            var project = workspace.Projects[i];
+            if (results[i].Items is { } items)
+            {
+                occurrences.AddRange(items.Select(o => o.Kind == ReferenceKind.Direct
+                    && declarations.TryGetValue((project.Path.ToUpperInvariant(), o.Framework.ToUpperInvariant(), o.PackageId.ToUpperInvariant()), out var decl)
+                    ? o with { DeclarationPath = decl } : o));
+            }
+            else
+            {
+                problems.Add(new ProjectProblem(project.Path, results[i].Error ?? "无法读取依赖。"));
+            }
+        }
+        return new PackageInventory(occurrences) { Problems = problems };
+    }
+
+    private async Task<(List<PackageOccurrence>? Items, string? Error)> TryListAsync(ProjectDescriptor project, CancellationToken ct)
+    {
+        var dir = Path.GetDirectoryName(project.Path)!;
+        var result = await RunRawAsync(dir,
+            ["package", "list", "--project", project.Path, "--include-transitive", "--no-restore", "--format", "json", "--output-version", "1"],
+            LongTimeout, ct).ConfigureAwait(false);
+        PackageListOutput? output = TryParse(result.Stdout, SdkJsonContext.Default.PackageListOutput);
+        if (output is null)
+        {
+            if (result.ExitCode == 0)
+            {
+                throw new SdkOutputException($"dotnet package list 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}");
+            }
+            return (null, Redact((result.Stdout + "\n" + result.Stderr).Trim()));
+        }
+        var errors = AllProblems(output).Where(p => !string.Equals(p.Level, "warning", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (result.ExitCode != 0 || errors.Count > 0 || output.Projects is null)
+        {
+            return (null, Redact(string.Join("\n", errors.Select(e => e.Text)).Trim() is { Length: > 0 } t ? t : result.Stderr.Trim()));
+        }
+        return (ToOccurrences(project, output), null);
+    }
+
+    private static List<PackageOccurrence> ToOccurrences(ProjectDescriptor project, PackageListOutput output)
+    {
+        var list = new List<PackageOccurrence>();
+        foreach (var p in output.Projects ?? [])
+        {
+            foreach (var fw in p.Frameworks ?? [])
+            {
+                var framework = fw.Framework ?? "";
+                foreach (var pkg in fw.TopLevelPackages ?? [])
+                {
+                    if (pkg.Id is null)
+                    {
+                        continue;
+                    }
+                    var kind = IsTrue(pkg.AutoReferenced) ? ReferenceKind.SdkImplicit : ReferenceKind.Direct;
+                    list.Add(new PackageOccurrence(project.Path, framework, pkg.Id, pkg.RequestedVersion, pkg.ResolvedVersion ?? "", kind, null));
+                }
+                foreach (var pkg in fw.TransitivePackages ?? [])
+                {
+                    if (pkg.Id is null)
+                    {
+                        continue;
+                    }
+                    list.Add(new PackageOccurrence(project.Path, framework, pkg.Id, null, pkg.ResolvedVersion ?? "", ReferenceKind.Transitive, null));
+                }
+            }
+        }
+        return list;
+    }
+
+    private async Task ReadOnlyRestoreAsync(ProjectDescriptor project, ProjectEvaluation? evaluation, CancellationToken ct)
+    {
+        var dir = Path.GetDirectoryName(project.Path)!;
+        var lockFiles = evaluation?.LockFilePaths ?? [Path.Combine(dir, "packages.lock.json")];
+        var args = new List<string> { "restore", project.Path };
+        if (lockFiles.Any(File.Exists))
+        {
+            args.Add("--locked-mode");
+        }
+        else if (lockFiles.Count > 0)
+        {
+            // Loading must not create a lock file the user has not seen yet.
+            args.Add("-p:RestorePackagesWithLockFile=false");
+        }
+        await RunCheckedAsync(dir, args, LongTimeout, ct).ConfigureAwait(false);
+    }
+
+    public async Task RestoreAsync(IReadOnlyList<ProjectDescriptor> projects, bool lockedMode, CancellationToken ct)
+    {
+        foreach (var project in projects)
+        {
+            var args = new List<string> { "restore", project.Path };
+            if (lockedMode)
+            {
+                args.Add("--locked-mode");
+            }
+            await RunCheckedAsync(Path.GetDirectoryName(project.Path)!, args, LongTimeout, ct).ConfigureAwait(false);
+        }
+    }
+
+    public async Task<PackageListOutput> ListOutdatedAsync(ProjectDescriptor project, bool includePrerelease, CancellationToken ct)
+    {
+        var args = new List<string> { "package", "list", "--project", project.Path, "--outdated", "--no-restore", "--format", "json", "--output-version", "1" };
+        if (includePrerelease)
+        {
+            args.Add("--include-prerelease");
+        }
+        var result = await RunRawAsync(Path.GetDirectoryName(project.Path)!, args, LongTimeout, ct).ConfigureAwait(false);
+        var output = TryParse(result.Stdout, SdkJsonContext.Default.PackageListOutput);
+        if (output is null)
+        {
+            throw result.ExitCode == 0
+                ? new SdkOutputException($"dotnet package list --outdated 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}")
+                : new SdkCommandException(ProcessRunner.Describe(args), result.ExitCode, Redact((result.Stdout + "\n" + result.Stderr).Trim()));
+        }
+        if (result.ExitCode != 0 && !AllProblems(output).Any())
+        {
+            output.Problems = [new ListProblem { Text = Redact(result.Stderr.Trim()), Level = "error" }];
+        }
+        return output;
+    }
+
+    public async Task<SearchOutput> SearchAsync(string workingDirectory, string query, int skip, int take, bool includePrerelease, bool exactMatch, string? source, CancellationToken ct)
+    {
+        var args = new List<string> { "package", "search", query, "--format", "json" };
+        if (exactMatch)
+        {
+            args.Add("--exact-match");
+        }
+        else
+        {
+            args.AddRange(["--skip", skip.ToString(System.Globalization.CultureInfo.InvariantCulture), "--take", take.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+        }
+        if (includePrerelease)
+        {
+            args.Add("--prerelease");
+        }
+        if (source is not null)
+        {
+            args.AddRange(["--source", source]);
+        }
+        var result = await RunRawAsync(workingDirectory, args, LongTimeout, ct).ConfigureAwait(false);
+        var output = TryParse(result.Stdout, SdkJsonContext.Default.SearchOutput);
+        if (output is null)
+        {
+            throw result.ExitCode == 0
+                ? new SdkOutputException($"dotnet package search 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}")
+                : new SdkCommandException(ProcessRunner.Describe(args), result.ExitCode, Redact((result.Stdout + "\n" + result.Stderr).Trim()));
+        }
+        foreach (var p in output.Problems ?? [])
+        {
+            p.Text = Redact(p.Text ?? "");
+        }
+        return output;
+    }
+
+    public Task AddPackageAsync(string projectPath, string packageId, string version, CancellationToken ct) =>
+        RunCheckedAsync(Path.GetDirectoryName(projectPath)!,
+            ["package", "add", packageId, "--version", version, "--project", projectPath, "--no-restore"], LongTimeout, ct);
+
+    public Task RemovePackageAsync(string projectPath, string packageId, CancellationToken ct) =>
+        RunCheckedAsync(Path.GetDirectoryName(projectPath)!,
+            ["package", "remove", packageId, "--project", projectPath], LongTimeout, ct);
+
+    public async Task<string?> GetGlobalPackagesFolderAsync(string directory, CancellationToken ct)
+    {
+        if (_environment is not null && _environment.TryGetValue("NUGET_PACKAGES", out var configured) && !string.IsNullOrEmpty(configured))
+        {
+            return configured;
+        }
+        var result = await RunRawAsync(directory, ["nuget", "locals", "global-packages", "--list"], ShortTimeout, ct).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            return null;
+        }
+        foreach (var line in result.Stdout.Split('\n'))
+        {
+            var idx = line.IndexOf("global-packages:", StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+            {
+                var path = line[(idx + "global-packages:".Length)..].Trim();
+                return path.Length > 0 ? path : null;
+            }
+        }
+        return null;
+    }
+
+    private async Task<ProcessResult> RunCheckedAsync(string directory, IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
+    {
+        var result = await RunRawAsync(directory, args, timeout, ct).ConfigureAwait(false);
+        if (result.ExitCode != 0)
+        {
+            throw new SdkCommandException(ProcessRunner.Describe(args), result.ExitCode, Truncate(Redact((result.Stdout + "\n" + result.Stderr).Trim())));
+        }
+        return result;
+    }
+
+    private async Task<T> RunJsonAsync<T>(string directory, IReadOnlyList<string> args, TimeSpan timeout, JsonTypeInfo<T> info, CancellationToken ct)
+        where T : class
+    {
+        var result = await RunCheckedAsync(directory, args, timeout, ct).ConfigureAwait(false);
+        return TryParse(result.Stdout, info)
+            ?? throw new SdkOutputException($"dotnet {args[0]} 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}");
+    }
+
+    private Task<ProcessResult> RunRawAsync(string directory, IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
+    {
+        var workDir = Directory.Exists(directory) ? directory : Path.GetTempPath();
+        return _runner.RunAsync(new ProcessRequest("dotnet", args, workDir, timeout, _environment), ct);
+    }
+
+    private static T? TryParse<T>(string text, JsonTypeInfo<T> info) where T : class
+    {
+        var start = text.IndexOf('{');
+        if (start < 0)
+        {
+            return null;
+        }
+        try
+        {
+            return JsonSerializer.Deserialize(text.AsSpan(start), info);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    internal static IEnumerable<ListProblem> AllProblems(PackageListOutput output) =>
+        (output.Problems ?? []).Concat((output.Projects ?? []).SelectMany(p => p.Problems ?? []));
+
+    private static async Task ParallelForAsync(int count, Func<int, Task> body, CancellationToken ct)
+    {
+        using var gate = new SemaphoreSlim(MaxParallel);
+        var tasks = Enumerable.Range(0, count).Select(async i =>
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await body(i).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }).ToList();
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    private static IEnumerable<Dictionary<string, string>> Items(MsBuildOutput output, string name) =>
+        output.Items is not null && output.Items.TryGetValue(name, out var list) ? list : [];
+
+    private static string? Get(Dictionary<string, string> dict, string key) =>
+        dict.TryGetValue(key, out var v) ? v : null;
+
+    private static List<string> Split(string? value) =>
+        (value ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    private static bool IsTrue(string? value) => string.Equals(value?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string? Normalize(string? path) => string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
+
+    private static string Truncate(string text) => text.Length > 4000 ? text[..4000] + "…" : text;
+
+    [GeneratedRegex(@"(?<=://)[^/\s:@]+:[^/\s@]+@", RegexOptions.CultureInvariant)]
+    private static partial Regex UrlCredentials();
+
+    [GeneratedRegex(@"(?i)\b(password|pwd|token|apikey|api-key|secret|cleartextpassword)\s*[=:]\s*\S+", RegexOptions.CultureInvariant)]
+    private static partial Regex SecretAssignments();
+
+    internal static string Redact(string text) =>
+        SecretAssignments().Replace(UrlCredentials().Replace(text, "***@"), m => m.Groups[1].Value + "=***");
+
+    /// <summary>Reads raw project XML to detect declaration shapes that evaluation flattens.</summary>
+    private sealed class DeclarationInspector
+    {
+        private readonly Dictionary<string, XDocument?> _cache = new(StringComparer.OrdinalIgnoreCase);
+
+        public (bool HasVersion, string? Problem) Inspect(string file, string elementName, string id)
+        {
+            if (!_cache.TryGetValue(file, out var doc))
+            {
+                doc = Load(file);
+                _cache[file] = doc;
+            }
+            if (doc is null)
+            {
+                return (false, $"无法读取声明文件 {file}。");
+            }
+            var matches = doc.Descendants()
+                .Where(e => e.Name.LocalName == elementName)
+                .Where(e => ((string?)e.Attribute("Include") ?? "")
+                    .Split(';', StringSplitOptions.TrimEntries).Contains(id, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            if (matches.Count == 0)
+            {
+                return (false, $"无法在 {Path.GetFileName(file)} 中定位 {id} 的 {elementName} 声明（可能使用了通配符或属性生成）。");
+            }
+            if (matches.Count > 1)
+            {
+                return (false, $"{Path.GetFileName(file)} 中存在多个 {id} 的 {elementName} 声明，无法安全确定写入目标。");
+            }
+            var element = matches[0];
+            if (element.AncestorsAndSelf().Any(a => a.Attribute("Condition") is not null || a.Name.LocalName is "When" or "Otherwise"))
+            {
+                return (false, $"{id} 在 {Path.GetFileName(file)} 中是条件引用，自动写入会丢失条件，请手动修改。");
+            }
+            var version = (string?)element.Attribute("Version") ?? element.Elements().FirstOrDefault(e => e.Name.LocalName == "Version")?.Value;
+            if (version is not null && (version.Contains("$(") || version.Contains("@(") || version.Contains("%(")))
+            {
+                return (true, $"{id} 的版本使用了表达式 {version}，自动写入会替换表达式，请手动修改。");
+            }
+            return (version is not null, null);
+        }
+
+        private static XDocument? Load(string file)
+        {
+            try
+            {
+                using var reader = XmlReader.Create(file, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null });
+                return XDocument.Load(reader);
+            }
+            catch (Exception ex) when (ex is IOException or XmlException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+    }
+}
