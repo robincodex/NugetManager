@@ -1,7 +1,66 @@
+using Aprillz.MewUI;
+using NugetManager.Operations;
+using NugetManager.Packages;
+using NugetManager.Presentation;
+using NugetManager.Sdk;
+using NugetManager.Workspaces;
+
 namespace NugetManager;
 
 static class Program
 {
     [STAThread]
-    static void Main() { }
+    static int Main(string[] args)
+    {
+        string? directory = null;
+        if (args.Length > 1)
+        {
+            return Fail("用法：NugetManager [工作目录]");
+        }
+        if (args.Length == 1)
+        {
+            directory = Path.GetFullPath(args[0]);
+            if (!Directory.Exists(directory))
+            {
+                return Fail($"工作目录不存在：{directory}");
+            }
+        }
+
+        var recoveryDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NugetManager", "recovery");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("NugetManager/0.0.1");
+
+        var sdk = new SdkClient(new ProcessRunner());
+        var controller = new WorkspaceController(
+            new WorkspaceDiscovery(),
+            sdk,
+            new PackageCatalog(sdk),
+            new PackageMetadataReader(http),
+            new PackageOperations(sdk, recoveryDirectory));
+
+        try
+        {
+            var app = Application.Create().UseWin32().UseDirect2D();
+            app.BuildMainWindow(() => MainWindow.Create(controller, directory)).Run();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            return Fail("启动失败：" + ex.Message);
+        }
+    }
+
+    private static int Fail(string message)
+    {
+        try
+        {
+            NativeMessageBox.Show(message, "NuGet 包管理器", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
+        }
+        catch (Exception)
+        {
+            Console.Error.WriteLine(message);
+        }
+        return 1;
+    }
 }
