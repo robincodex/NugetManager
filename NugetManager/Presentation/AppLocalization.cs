@@ -110,6 +110,8 @@ internal static partial class AppLocalization
         [TextKey.InvalidLocalizedMessage] = ["本地化消息记录无效。", "Invalid localized message record.", "현지화 메시지 기록이 올바르지 않습니다.", "Некорректная запись локализованного сообщения."],
         [TextKey.InvalidWebLink] = ["只能打开不含凭据的 HTTP(S) 绝对链接。", "Only absolute HTTP(S) links without credentials can be opened.", "자격 증명이 없는 HTTP(S) 절대 링크만 열 수 있습니다.", "Можно открывать только абсолютные HTTP(S)-ссылки без учётных данных."],
         [TextKey.BrowserDidNotStart] = ["系统浏览器未启动。", "The system browser did not start.", "시스템 브라우저가 시작되지 않았습니다.", "Системный браузер не запустился."],
+        [TextKey.UnknownInstalledSources] = ["{0} 个包的还原来源未知或不在当前包源中，仅在全部包源中显示。", "{0} packages have an unknown or unconfigured restore source and appear only under All sources.", "패키지 {0}개의 복원 소스를 알 수 없거나 현재 소스에 없어 모든 소스에서만 표시됩니다.", "Источник восстановления {0} пакетов неизвестен или не настроен; они видны только при выборе всех источников."],
+        [TextKey.SelectInstalledSources] = ["请选择包源以显示已安装的包。", "Select sources to show installed packages.", "설치된 패키지를 표시할 소스를 선택하세요.", "Выберите источники для отображения установленных пакетов."],
     };
 
     public static UiLanguage ResolveLanguage(UiLanguage language, CultureInfo culture) => language != UiLanguage.System ? language

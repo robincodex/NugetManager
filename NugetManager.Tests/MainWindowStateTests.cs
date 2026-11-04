@@ -66,7 +66,7 @@ public class MainWindowStateTests
         Assert.True(ready.SourceSelection);
         Assert.True(ready.Search);
         var installed = PresentationModel.BuildActivity(state with { IsBusy = false }, false);
-        Assert.False(installed.SourceSelection);
+        Assert.True(installed.SourceSelection);
         Assert.False(installed.Search);
         Assert.True(installed.Details);
     }

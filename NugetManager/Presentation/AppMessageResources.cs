@@ -29,6 +29,8 @@ internal enum TextKey
     InvalidLocalizedMessage,
     InvalidWebLink,
     BrowserDidNotStart,
+    UnknownInstalledSources,
+    SelectInstalledSources,
     Join,
     M001,
     M002,

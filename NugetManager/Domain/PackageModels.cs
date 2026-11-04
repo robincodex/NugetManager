@@ -17,7 +17,10 @@ internal sealed record PackageOccurrence(
     string? RequestedVersion,
     string ResolvedVersion,
     ReferenceKind Kind,
-    string? DeclarationPath);
+    string? DeclarationPath)
+{
+    public string? SourceLocation { get; init; }
+}
 
 internal sealed record EvaluatedReference(
     string PackageId,
@@ -42,6 +45,7 @@ internal sealed record ProjectEvaluation(
 
     /// <summary>Effective Directory.Packages.props when central package management is enabled.</summary>
     public string? CentralPackagesFile { get; init; }
+    public string? AssetsFile { get; init; }
 
     /// <summary>Every central PackageVersion entry visible to the project: id → defining file.</summary>
     public IReadOnlyDictionary<string, string> CentralVersions { get; init; } =

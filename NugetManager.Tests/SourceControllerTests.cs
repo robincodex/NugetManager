@@ -7,6 +7,53 @@ namespace NugetManager.Tests;
 public class SourceControllerTests
 {
     [Fact]
+    public async Task InstalledSelectionFiltersOccurrencesAndUpgradePreviewByActualVersionOrigin()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        ws.WriteNuGetConfig($"""<add key="second" value="{ws.Path_("second-feed")}" />""");
+        var firstProject = new ProjectDescriptor(ws.Path_("First.csproj"), "First");
+        var secondProject = new ProjectDescriptor(ws.Path_("Second.csproj"), "Second");
+        var unknownProject = new ProjectDescriptor(ws.Path_("Unknown.csproj"), "Unknown");
+        PackageOccurrence[] occurrences = [
+            new(firstProject.Path, "net10.0", "Same", "1.0", "1.0.0", ReferenceKind.Direct, firstProject.Path) { SourceLocation = ws.FeedDirectory },
+            new(secondProject.Path, "net10.0", "Same", "2.0", "2.0.0", ReferenceKind.Direct, secondProject.Path) { SourceLocation = ws.Path_("second-feed") },
+            new(unknownProject.Path, "net10.0", "Unknown", "1.0", "1.0.0", ReferenceKind.Direct, unknownProject.Path),
+            new(firstProject.Path, "net10.0", "Transitive", null, "1.0.0", ReferenceKind.Transitive, null) { SourceLocation = ws.FeedDirectory },
+            new(secondProject.Path, "net10.0", "Implicit", null, "1.0.0", ReferenceKind.SdkImplicit, null) { SourceLocation = ws.Path_("second-feed") },
+        ];
+        var catalog = new FakeCatalog
+        {
+            Browse = (_, _) => throw new InvalidOperationException("Installed selection must not browse."),
+            Report = new([new("Same", occurrences.Where(o => o.PackageId == "Same").Select(o =>
+                new PackageUpgrade(new(o.PackageId, o.Framework, o.ProjectPath, null, o.RequestedVersion, null, true, null),
+                    o.ResolvedVersion, "3.0.0")).ToArray())], [], true),
+        };
+        var operations = new FakeOperations();
+        var controller = new WorkspaceController(new FakeDiscovery(new(ws.Root, null, [firstProject, secondProject, unknownProject])),
+            new FakeSdk { Inventory = new(occurrences) }, catalog, new FakeMetadata(), operations);
+        await controller.OpenAsync(ws.Root, null, CancellationToken.None);
+        Assert.Equal(3, controller.State.Installed.Count);
+        controller.SetUpgradeSelected("Same", true);
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["local"]), CancellationToken.None, loadBrowse: false);
+        Assert.Equal(firstProject.Path, Assert.Single(controller.State.Installed).ProjectPath);
+        Assert.Single(controller.State.Implicit);
+        Assert.Empty(controller.State.SdkImplicit);
+        Assert.Equal(firstProject.Path, Assert.Single(Assert.Single(controller.State.Upgrades).Upgrades).Reference.ProjectPath);
+        var plan = await controller.PreviewSelectedUpgradesAsync(CancellationToken.None);
+        Assert.Equal(firstProject.Path, Assert.Single(plan.Changes).ProjectPath);
+        Assert.Contains(controller.State.Diagnostics, d => d.Code == "UnknownInstalledSource");
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["second"]), CancellationToken.None, loadBrowse: false);
+        Assert.Equal(secondProject.Path, Assert.Single(controller.State.Installed).ProjectPath);
+        Assert.Single(controller.State.SdkImplicit);
+        await controller.SelectSourcesAsync(SourceSelection.Subset([]), CancellationToken.None, loadBrowse: false);
+        Assert.Empty(controller.State.Installed);
+        Assert.Empty(controller.State.Upgrades);
+        Assert.Empty(controller.State.SelectedPackageIds);
+        await controller.SelectSourcesAsync(SourceSelection.All, CancellationToken.None, loadBrowse: false);
+        Assert.Equal(3, controller.State.Installed.Count);
+    }
+
+    [Fact]
     public async Task MultiSourcePagingUsesPerSourceOffsetRatherThanCombinedRowCount()
     {
         await using var ws = await TestWorkspace.CreateAsync();
@@ -143,7 +190,7 @@ public class SourceControllerTests
     public async Task SourceSelectionRerunsQueryWithoutChangingInstalled()
     {
         await using var ws = await TestWorkspace.CreateAsync();
-        var sdk = new FakeSdk { Inventory = new PackageInventory([new PackageOccurrence("P", "net10.0", "Installed", "1.0.0", "1.0.0", ReferenceKind.Direct, "P")]) };
+        var sdk = new FakeSdk { Inventory = new PackageInventory([new PackageOccurrence("P", "net10.0", "Installed", "1.0.0", "1.0.0", ReferenceKind.Direct, "P") { SourceLocation = ws.FeedDirectory }]) };
         var catalog = new FakeCatalog { SourceSearch = (query, source) => Task.FromResult(new SearchPage(
             [new SearchHit(query, "1.0.0", source.Resolve(NuGetConfigReader.Load(ws.Root).Sources).Single(), null)], 0, 20, false, [])) };
         var controller = Controller(ws, catalog, sdk);

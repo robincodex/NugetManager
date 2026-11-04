@@ -6,6 +6,16 @@ namespace NugetManager.Tests;
 
 public class SourceSelectionTests
 {
+    [Theory]
+    [InlineData("C:\\feed", "file:///C:/feed/")]
+    [InlineData("C:\\feed", "c:\\FEED\\")]
+    [InlineData("https://example.test/v3/index.json", "https://EXAMPLE.test/v3/index.json/")]
+    public void SourceLocationsMatchCacheOrigins(string configured, string cached)
+    {
+        Assert.True(new NuGetSource("source", configured, true, false).MatchesLocation(cached));
+        Assert.False(new NuGetSource("other", "https://other.test/v3/index.json", true, false).MatchesLocation(cached));
+    }
+
     [Fact]
     public void AllAndEmptyHaveDifferentIntentAndSubsetNormalizesNames()
     {

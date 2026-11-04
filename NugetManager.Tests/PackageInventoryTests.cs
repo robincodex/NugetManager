@@ -67,6 +67,39 @@ public class SdkClientTests
 
 public class PackageInventoryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InventoryRetainsActualRestoreOriginFromCustomAssets(bool passEvaluation)
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        ws.Write("Directory.Build.props", "<Project><PropertyGroup><BaseIntermediateOutputPath>custom-obj\\</BaseIntermediateOutputPath></PropertyGroup></Project>");
+        ws.AddPackage("Example.Json", "1.0.0");
+        var project = ws.WriteProject("App\\App.csproj", "net10.0", ("Example.Json", "1.0.0"));
+        var sdk = ws.CreateSdk();
+        var evaluation = passEvaluation ? await sdk.EvaluateAsync(new(project, "App"), CancellationToken.None) : null;
+        var inventory = await sdk.ReadInventoryAsync(WorkspaceOf(ws, project), evaluation is null ? null : [evaluation], CancellationToken.None);
+        Assert.Empty(inventory.Problems);
+        Assert.Equal(ws.FeedDirectory, Assert.Single(inventory.Occurrences, o => o.PackageId == "Example.Json").SourceLocation);
+        Assert.True(File.Exists(ws.Path_("App\\custom-obj\\project.assets.json")));
+    }
+
+    [Fact]
+    public async Task OriginEvaluationFailurePreservesInventoryAndReportsProblem()
+    {
+        const string json = """
+            {"version":1,"projects":[{"path":"C:/p/App.csproj","frameworks":[{"framework":"net10.0",
+            "topLevelPackages":[{"id":"Example.Json","requestedVersion":"1.0.0","resolvedVersion":"1.0.0"}]}]}]}
+            """;
+        var sdk = new SdkClient(new FakeProcessRunner(request => request.Arguments[0] == "msbuild"
+            ? new ProcessResult(1, "", "Origin evaluation failed")
+            : new ProcessResult(0, json, "")));
+        var inventory = await sdk.ReadInventoryAsync(new("C:\\p", null, [new("C:\\p\\App.csproj", "App")]), CancellationToken.None);
+        Assert.Equal("Example.Json", Assert.Single(inventory.Occurrences).PackageId);
+        Assert.Null(inventory.Occurrences[0].SourceLocation);
+        Assert.Contains("Origin evaluation failed", TestMessages.Zh(Assert.Single(inventory.Problems).Message));
+    }
+
     private static Workspace WorkspaceOf(TestWorkspace ws, params string[] projects) =>
         new(ws.Root, null, projects.Select(p => new ProjectDescriptor(p, Path.GetFileNameWithoutExtension(p))).ToList());
 

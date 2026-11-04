@@ -77,11 +77,16 @@ public class NativeWindowBindingTests
                 Assert.Equal(AppLocalization.Template(TextKey.AppTitle, language), window.Title);
                 var statusBar = Assert.IsType<Border>(Field<TextBlock>(window, "_statusText").Parent!.Parent);
                 Assert.Equal(AppTheme.Current.Header, statusBar.Background);
+                var tabs = Field<SegmentedControl>(window, "_tabs");
+                tabs.Measure(new Size(650, 50));
+                tabs.Arrange(new Rect(0, 0, 650, 50));
+                Assert.InRange(tabs.Bounds.Width, 80, 340);
+                Assert.True(tabs.Bounds.Width >= tabs.DesiredSize.Width, "Tab labels must not be clipped.");
             }
         }
         Set(window, "_browseMode", false);
         Invoke(window, "Render", state);
-        Assert.False(Field<Button>(window, "_sourcePicker").IsEnabled);
+        Assert.True(Field<Button>(window, "_sourcePicker").IsEnabled);
         Set(window, "_browseMode", true);
         Invoke(window, "Render", state with { IsBusy = true });
         Assert.False(Field<Button>(window, "_sourcePicker").IsEnabled);

@@ -222,7 +222,8 @@ internal sealed class MainWindow : Window
         _detailsCts?.Cancel();
         _links.Close();
         var query = _searchBox.Text?.Trim() ?? "";
-        Fire(() => _controller.SelectSourcesAsync(selection, CancellationToken.None, query));
+        var browseMode = _browseMode;
+        Fire(() => _controller.SelectSourcesAsync(selection, CancellationToken.None, query, loadBrowse: browseMode));
     }
 
     private void PackagePointer(MouseEventArgs e, string id, string version, string? source)
@@ -404,7 +405,7 @@ internal sealed class MainWindow : Window
         var middle = new DockPanel().Children(
             new StackPanel().Vertical().Spacing(6).Margin(8, 8, 8, 4).DockTop().Children(
                 new Grid().Columns("*,Auto").Children(
-                    _tabs,
+                    _tabs.HorizontalAlignment(HorizontalAlignment.Left),
                     new StackPanel().Horizontal().Spacing(6).Column(1).Children(
                         _sourceTitle.CenterVertical(), _sourcePicker)),
                 _searchBox),
@@ -595,7 +596,8 @@ internal sealed class MainWindow : Window
         }
         if (model.Groups.Count == 0)
         {
-            _middle.Add(Muted(L(TextKey.M093)).Margin(4, 8, 4, 0));
+            _middle.Add(Muted(L(!state.SelectedSources.IsAll && state.SelectedSources.Resolve(state.Sources).Count == 0
+                ? TextKey.SelectInstalledSources : TextKey.M093)).Margin(4, 8, 4, 0));
         }
         foreach (var group in model.Groups)
         {

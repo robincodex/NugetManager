@@ -61,7 +61,7 @@ internal static class PresentationModel
 {
     public static ActivityModel BuildActivity(WorkspaceViewState state, bool browseMode) =>
         new(state.IsBusy, browseMode && state.SearchLoading, state.SelectedPackageId is not null && state.DetailsLoading,
-            state.VersionsLoading, browseMode && state.Workspace is not null && !state.IsBusy,
+            state.VersionsLoading, state.Workspace is not null && !state.IsBusy,
             !browseMode && state.Workspace is null && state.Status == WorkspaceStatus.Loading,
             !browseMode && state.Workspace is not null && state.IsBusy
                 && state.Status is WorkspaceStatus.Loading or WorkspaceStatus.Ready);

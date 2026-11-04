@@ -337,15 +337,15 @@ internal sealed class WorkspaceController(
         }
     }
 
-    public async Task SelectSourcesAsync(SourceSelection selection, CancellationToken ct, string? query = null)
+    public async Task SelectSourcesAsync(SourceSelection selection, CancellationToken ct, string? query = null, bool loadBrowse = true)
     {
         EnsureNotWriting();
         Interlocked.Increment(ref _searchGeneration);
         Interlocked.Increment(ref _detailsGeneration);
         Interlocked.Increment(ref _versionsGeneration);
         Publish(s => Compose(s with { SelectedSources = selection.Reconcile(s.Sources), SearchQuery = query ?? s.SearchQuery, Search = null, Browse = null, SearchError = null,
-            SelectedPackageId = null, SelectedPackageSourceName = null, Versions = null, VersionsLoading = false, Details = null, DetailsLoading = false }));
-        await SearchAsync(State.SearchQuery, 0, ct).ConfigureAwait(false);
+            SearchLoading = false, SelectedPackageId = null, SelectedPackageSourceName = null, Versions = null, VersionsLoading = false, Details = null, DetailsLoading = false }));
+        if (loadBrowse) await SearchAsync(State.SearchQuery, 0, ct).ConfigureAwait(false);
     }
 
     public async Task LoadBrowseAsync(bool refresh, CancellationToken ct)
@@ -611,9 +611,22 @@ internal sealed class WorkspaceController(
         }
         var scope = s.Scope;
         var visible = s.Workspace?.Projects.Where(p => scope.Includes(p.Path)).ToList() ?? [];
-        var scoped = inventory.Occurrences.Where(o => scope.Includes(o.ProjectPath)).ToList();
+        var allScoped = inventory.Occurrences.Where(o => scope.Includes(o.ProjectPath)).ToList();
+        var selectedNames = s.SelectedSources.Resolve(s.Sources).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool KnownSource(PackageOccurrence o) => o.SourceLocation is not null && s.Sources.Any(source => source.MatchesLocation(o.SourceLocation));
+        bool MatchesSource(PackageOccurrence o) => s.SelectedSources.IsAll || o.SourceLocation is not null
+            && s.Sources.Any(source => selectedNames.Contains(source.Name) && source.MatchesLocation(o.SourceLocation));
+        var scoped = allScoped.Where(MatchesSource).ToList();
+        var unknownCount = allScoped.Where(o => !KnownSource(o)).Select(o => (o.PackageId.ToUpperInvariant(), o.ResolvedVersion)).Distinct().Count();
+        var unknownDiagnostics = unknownCount == 0 ? Array.Empty<SourceDiagnostic>()
+            : new[] { new SourceDiagnostic("", "UnknownInstalledSource", new UiMessage(TextKey.UnknownInstalledSources, unknownCount.ToString(System.Globalization.CultureInfo.InvariantCulture))) };
         var upgrades = report.Candidates
-            .Select(c => c with { Upgrades = c.Upgrades.Where(u => scope.Includes(u.Reference.ProjectPath)).ToList() })
+            .Select(c => c with { Upgrades = c.Upgrades.Where(u => scope.Includes(u.Reference.ProjectPath)
+                && (s.SelectedSources.IsAll || scoped.Any(o => o.Kind == ReferenceKind.Direct
+                    && PathUtil.AreEqual(o.ProjectPath, u.Reference.ProjectPath)
+                    && string.Equals(o.Framework, u.Reference.Framework, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(o.PackageId, c.PackageId, StringComparison.OrdinalIgnoreCase)
+                    && NuGetVersionComparer.Instance.Compare(o.ResolvedVersion, u.FromVersion) == 0))).ToList() })
             .Where(c => c.Upgrades.Count > 0)
             .OrderBy(c => c.PackageId, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -624,7 +637,7 @@ internal sealed class WorkspaceController(
             VisibleProjects = visible,
             Upgrades = upgrades,
             UpdatesComplete = report.IsComplete,
-            Diagnostics = [.. loadDiagnostics, .. report.Diagnostics],
+            Diagnostics = [.. unknownDiagnostics, .. loadDiagnostics, .. report.Diagnostics],
             Installed = Sorted(scoped.Where(o => o.Kind == ReferenceKind.Direct)),
             Implicit = Sorted(scoped.Where(o => o.Kind == ReferenceKind.Transitive)),
             SdkImplicit = Sorted(scoped.Where(o => o.Kind == ReferenceKind.SdkImplicit)),

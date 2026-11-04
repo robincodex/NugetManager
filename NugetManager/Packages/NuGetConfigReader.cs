@@ -7,6 +7,12 @@ internal sealed record NuGetSource(string Name, string Location, bool IsEnabled,
 {
     public bool IsHttp => Location.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || Location.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    public bool MatchesLocation(string location) =>
+        string.Equals(NormalizeLocation(Location), NormalizeLocation(location), StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeLocation(string location) =>
+        (Uri.TryCreate(location, UriKind.Absolute, out var uri) && uri.IsFile ? uri.LocalPath : location).TrimEnd('/', '\\');
 }
 
 internal sealed record NuGetSettings(

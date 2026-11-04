@@ -59,7 +59,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
                 var cachedSource = metadata.RootElement.TryGetProperty("source", out var origin) && origin.ValueKind == JsonValueKind.String
                     ? origin.GetString() : null;
                 cachedOrigin = cachedSource is null ? null : settings.SourcesFor(packageId).FirstOrDefault(s =>
-                    string.Equals(s.Location.TrimEnd('/', '\\'), cachedSource.TrimEnd('/', '\\'), StringComparison.OrdinalIgnoreCase));
+                    s.MatchesLocation(cachedSource));
                 cacheAllowed = sourceName is null || cachedOrigin is not null
                     && string.Equals(cachedOrigin.Name, sourceName, StringComparison.OrdinalIgnoreCase);
             }

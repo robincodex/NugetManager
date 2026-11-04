@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 using NugetManager.Domain;
+using NugetManager.Packages;
 
 namespace NugetManager.Sdk;
 
@@ -99,6 +100,7 @@ internal sealed partial class SdkClient : ISdkClient
             "-getProperty:TargetFramework", "-getProperty:TargetFrameworks",
             "-getProperty:ManagePackageVersionsCentrally", "-getProperty:DirectoryPackagesPropsPath",
             "-getProperty:NuGetLockFilePath", "-getProperty:RestorePackagesWithLockFile",
+            "-getProperty:ProjectAssetsFile",
             "-getItem:PackageReference", "-getItem:PackageVersion",
         ];
         var outer = await RunJsonAsync(dir, outerArgs, EvalTimeout, SdkJsonContext.Default.MsBuildOutput, ct).ConfigureAwait(false);
@@ -167,6 +169,7 @@ internal sealed partial class SdkClient : ISdkClient
             CentralPackageManagement = cpm,
             CentralPackagesFile = cpm && centralFile is not null ? Path.GetFullPath(centralFile) : null,
             CentralVersions = central,
+            AssetsFile = NullIfEmpty(Get(props, "ProjectAssetsFile")),
         };
     }
 
@@ -280,6 +283,30 @@ internal sealed partial class SdkClient : ISdkClient
             var project = workspace.Projects[i];
             if (results[i].Items is { } items)
             {
+                try
+                {
+                    var evaluation = evaluations?.FirstOrDefault(e => PathUtil.AreEqual(e.Project.Path, project.Path));
+                    var assetsFile = evaluation?.AssetsFile;
+                    if (assetsFile is null)
+                    {
+                        var evaluated = await RunJsonAsync(Path.GetDirectoryName(project.Path)!,
+                            ["msbuild", project.Path, "-nologo", "-getProperty:ProjectAssetsFile", "-getProperty:MSBuildProjectFullPath"],
+                            EvalTimeout, SdkJsonContext.Default.MsBuildOutput, ct).ConfigureAwait(false);
+                        assetsFile = NullIfEmpty(Get(evaluated.Properties ?? [], "ProjectAssetsFile"));
+                    }
+                    if (assetsFile is not null)
+                    {
+                        var origins = await InstalledPackageOrigins.ReadAsync(
+                            Path.GetFullPath(assetsFile, Path.GetDirectoryName(project.Path)!), items, ct).ConfigureAwait(false);
+                        items = origins.Occurrences.ToList();
+                        problems.AddRange(origins.Problems);
+                    }
+                }
+                catch (Exception ex) when (ex is SdkCommandException or SdkOutputException or ProcessTimeoutException
+                    or ProcessStartException or ArgumentException or NotSupportedException)
+                {
+                    problems.Add(new(project.Path, MF(TextKey.M050, $"无法确认缓存来源：{UiMessage.FromException(ex)}")));
+                }
                 occurrences.AddRange(items.Select(o => o.Kind == ReferenceKind.Direct
                     && declarations.TryGetValue((project.Path.ToUpperInvariant(), o.Framework.ToUpperInvariant(), o.PackageId.ToUpperInvariant()), out var decl)
                     ? o with { DeclarationPath = decl } : o));
