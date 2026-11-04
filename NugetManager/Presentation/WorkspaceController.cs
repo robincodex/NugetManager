@@ -56,7 +56,7 @@ internal sealed record WorkspaceViewState
     public string SearchQuery { get; init; } = "";
     public SearchPage? Search { get; init; }
     public IReadOnlyList<NuGetSource> Sources { get; init; } = [];
-    public string? SelectedSourceName { get; init; }
+    public SourceSelection SelectedSources { get; init; } = SourceSelection.All;
     public BrowsePage? Browse { get; init; }
     public bool SearchLoading { get; init; }
     public string? SearchError { get; init; }
@@ -98,7 +98,7 @@ internal sealed class WorkspaceController(
     private long _versionsGeneration;
     private bool _writing;
     private bool _browseActivated;
-    private readonly Dictionary<(string Directory, string? Source, bool Prerelease), BrowsePage> _browseCache = [];
+    private readonly Dictionary<(string Directory, SourceSelection Sources, bool Prerelease), BrowsePage> _browseCache = [];
 
     public event Action<WorkspaceViewState>? StateChanged;
 
@@ -311,7 +311,8 @@ internal sealed class WorkspaceController(
         Publish(s => s with { SearchQuery = query, Browse = null, SearchLoading = true, SearchError = null, Search = skip == 0 ? null : s.Search });
         try
         {
-            var page = await catalog.SearchAsync(workspace, query, skip, SearchPageSize, state.IncludePrerelease, ct, state.SelectedSourceName).ConfigureAwait(false);
+            var page = state.SelectedSources.Resolve(state.Sources).Count == 0 ? new SearchPage([], skip, SearchPageSize, false, [])
+                : await catalog.SearchAsync(workspace, query, skip, SearchPageSize, state.IncludePrerelease, ct, state.SelectedSources).ConfigureAwait(false);
             PublishIf(() => generation == Interlocked.Read(ref _searchGeneration), s => s with
             {
                 SearchLoading = false,
@@ -331,17 +332,13 @@ internal sealed class WorkspaceController(
         }
     }
 
-    public async Task SelectSourceAsync(string? sourceName, CancellationToken ct, string? query = null)
+    public async Task SelectSourcesAsync(SourceSelection selection, CancellationToken ct, string? query = null)
     {
         EnsureNotWriting();
-        if (sourceName is not null && !State.Sources.Any(s => string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase)))
-        {
-            throw new InvalidOperationException($"包源不存在或已禁用：{sourceName}");
-        }
         Interlocked.Increment(ref _searchGeneration);
         Interlocked.Increment(ref _detailsGeneration);
         Interlocked.Increment(ref _versionsGeneration);
-        Publish(s => Compose(s with { SelectedSourceName = sourceName, SearchQuery = query ?? s.SearchQuery, Search = null, Browse = null, SearchError = null,
+        Publish(s => Compose(s with { SelectedSources = selection.Reconcile(s.Sources), SearchQuery = query ?? s.SearchQuery, Search = null, Browse = null, SearchError = null,
             SelectedPackageId = null, SelectedPackageSourceName = null, Versions = null, Details = null, DetailsLoading = false }));
         await SearchAsync(State.SearchQuery, 0, ct).ConfigureAwait(false);
     }
@@ -351,7 +348,7 @@ internal sealed class WorkspaceController(
         var state = State;
         var workspace = state.Workspace ?? throw new InvalidOperationException("尚未打开工作区。");
         var generation = Interlocked.Increment(ref _searchGeneration);
-        var key = (workspace.Directory, state.SelectedSourceName, state.IncludePrerelease);
+        var key = (workspace.Directory, SourceSelection.Subset(state.SelectedSources.Resolve(state.Sources)), state.IncludePrerelease);
         BrowsePage? cached;
         lock (_gate)
         {
@@ -364,7 +361,8 @@ internal sealed class WorkspaceController(
         if (cached is not null) return;
         try
         {
-            var page = await catalog.BrowseAsync(workspace, state.SelectedSourceName, state.IncludePrerelease, ct).ConfigureAwait(false);
+            var page = state.SelectedSources.Resolve(state.Sources).Count == 0 ? new BrowsePage([])
+                : await catalog.BrowseAsync(workspace, state.SelectedSources, state.IncludePrerelease, ct).ConfigureAwait(false);
             PublishIf(() => generation == Interlocked.Read(ref _searchGeneration), s =>
             {
                 // Failed source groups must be retryable rather than cached as a permanent result.
@@ -521,10 +519,8 @@ internal sealed class WorkspaceController(
             var scope = s.Scope.ProjectPath is { } path && !workspace.Projects.Any(p => PathUtil.AreEqual(p.Path, path))
                 ? WorkspaceScope.All
                 : s.Scope;
-            var selectedSource = sources.Any(source => string.Equals(source.Name, s.SelectedSourceName, StringComparison.OrdinalIgnoreCase))
-                ? s.SelectedSourceName : null;
             return s with { Workspace = workspace, Evaluations = evaluations, Scope = scope, SolutionChoices = [],
-                Sources = sources, SelectedSourceName = selectedSource };
+                Sources = sources, SelectedSources = s.SelectedSources.Reconcile(sources) };
         });
         await CheckUpdatesAsync(workspace, evaluations, State.IncludePrerelease, generation, ct).ConfigureAwait(false);
         PublishIf(generation, s => Compose(s with

@@ -7,6 +7,26 @@ namespace NugetManager.Tests;
 
 public class SourceBrowseTests
 {
+    [Fact]
+    public async Task TwoOfThreeFeedsStayGroupedThroughPaging()
+    {
+        await using var ws = await TwoFeedsAsync();
+        ws.WriteNuGetConfig($"""<add key="second" value="{ws.Path_("second")}" /><add key="excluded" value="{ws.FeedDirectory}" />""");
+        var catalog = new PackageCatalog(ws.CreateSdk());
+        var selection = SourceSelection.Subset(["SECOND", "local"]);
+        var browse = await catalog.BrowseAsync(WorkspaceOf(ws), selection, false, CancellationToken.None);
+        Assert.Equal(["local", "second"], browse.Sources.Select(s => s.Source.Name));
+        Assert.All(browse.Sources, s => Assert.Equal(10, s.Page.Items.Count));
+        var first = await catalog.SearchAsync(WorkspaceOf(ws), "Example", 0, 20, false, CancellationToken.None, selection);
+        var second = await catalog.SearchAsync(WorkspaceOf(ws), "Example", 20, 20, false, CancellationToken.None, selection);
+        Assert.True(first.HasMore);
+        Assert.False(second.HasMore);
+        Assert.Equal(40, first.Items.Count);
+        Assert.Equal(30, second.Items.Count);
+        Assert.DoesNotContain(first.Items.Concat(second.Items), h => h.SourceName == "excluded");
+        Assert.Equal(70, first.Items.Concat(second.Items).Select(h => (h.SourceName, h.PackageId)).Distinct().Count());
+    }
+
     private static Workspace WorkspaceOf(TestWorkspace ws) => new(ws.Root, null, []);
 
     private static async Task<TestWorkspace> TwoFeedsAsync()
@@ -38,7 +58,8 @@ public class SourceBrowseTests
     public async Task InitialBrowseUsesPerSourceLimits(string? source, int groups, int count)
     {
         await using var ws = await TwoFeedsAsync();
-        var page = await new PackageCatalog(ws.CreateSdk()).BrowseAsync(WorkspaceOf(ws), source, false, CancellationToken.None);
+        var page = await new PackageCatalog(ws.CreateSdk()).BrowseAsync(WorkspaceOf(ws),
+            source is null ? SourceSelection.All : SourceSelection.Subset([source]), false, CancellationToken.None);
         Assert.Equal(groups, page.Sources.Count);
         Assert.All(page.Sources, g =>
         {
@@ -55,7 +76,7 @@ public class SourceBrowseTests
         var newer = ws.AddPackage("Example.P00", "2.0.0");
         File.Move(newer, Path.Combine(ws.Path_("second"), Path.GetFileName(newer)));
         var catalog = new PackageCatalog(ws.CreateSdk());
-        var page = await catalog.SearchAsync(WorkspaceOf(ws), "Example.P00", 0, 30, false, CancellationToken.None, "second");
+        var page = await catalog.SearchAsync(WorkspaceOf(ws), "Example.P00", 0, 30, false, CancellationToken.None, SourceSelection.Subset(["second"]));
         Assert.Equal("second", Assert.Single(page.Items).SourceName);
         Assert.Equal("2.0.0", page.Items[0].Version);
         var versions = await catalog.GetVersionsAsync(WorkspaceOf(ws), "Example.P00", false, CancellationToken.None, "local");
@@ -69,7 +90,7 @@ public class SourceBrowseTests
         ws.AddPackage("Existing", "1.0.0");
         ws.WriteNuGetConfig($"""<add key="missing" value="{ws.Path_("missing")}" />""");
         var catalog = new PackageCatalog(ws.CreateSdk());
-        var page = await catalog.BrowseAsync(WorkspaceOf(ws), null, false, CancellationToken.None);
+        var page = await catalog.BrowseAsync(WorkspaceOf(ws), SourceSelection.All, false, CancellationToken.None);
         Assert.Single(page.Sources.Single(g => g.Source.Name == "local").Page.Items);
         Assert.Contains(page.Sources.Single(g => g.Source.Name == "missing").Page.Diagnostics, d => d.SourceName == "missing");
         var search = await catalog.SearchAsync(WorkspaceOf(ws), "Existing", 0, 20, false, CancellationToken.None);
@@ -83,7 +104,7 @@ public class SourceBrowseTests
     {
         await using var ws = await TwoFeedsAsync();
         ws.WriteNuGetConfig("""<add key="broken" value="http://127.0.0.1:9/v3/index.json" />""");
-        var page = await new PackageCatalog(ws.CreateSdk()).BrowseAsync(WorkspaceOf(ws), null, false, CancellationToken.None);
+        var page = await new PackageCatalog(ws.CreateSdk()).BrowseAsync(WorkspaceOf(ws), SourceSelection.All, false, CancellationToken.None);
         Assert.Equal(10, page.Sources[0].Page.Items.Count);
         Assert.NotEmpty(page.Sources.Single(g => g.Source.Name == "broken").Page.Diagnostics);
     }

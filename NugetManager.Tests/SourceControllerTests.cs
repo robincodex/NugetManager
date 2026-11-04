@@ -42,7 +42,7 @@ public class SourceControllerTests
         var controller = Controller(ws, new FakeCatalog());
         await controller.OpenAsync(ws.Root, null, CancellationToken.None);
         await controller.SearchAsync("previous", 0, CancellationToken.None);
-        await controller.SelectSourceAsync("local", CancellationToken.None, "");
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["local"]), CancellationToken.None, "");
         Assert.Equal("", controller.State.SearchQuery);
         Assert.NotNull(controller.State.Browse);
         Assert.Null(controller.State.Search);
@@ -62,11 +62,11 @@ public class SourceControllerTests
         ws.WriteNuGetConfig($"""<add key="second" value="{second}" />""");
         var controller = Controller(ws, new PackageCatalog(ws.CreateSdk()));
         await controller.OpenAsync(ws.Root, null, CancellationToken.None);
-        Assert.Null(controller.State.SelectedSourceName);
+        Assert.True(controller.State.SelectedSources.IsAll);
         await controller.LoadBrowseAsync(false, CancellationToken.None);
         Assert.All(controller.State.Browse!.Sources, g => Assert.Equal(10, g.Page.Items.Count));
         Assert.Equal(2, controller.State.Browse.Sources.Count);
-        await controller.SelectSourceAsync("second", CancellationToken.None);
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["second"]), CancellationToken.None);
         Assert.Equal(30, Assert.Single(controller.State.Browse!.Sources).Page.Items.Count);
         await controller.SearchAsync("", 0, CancellationToken.None);
         Assert.NotNull(controller.State.Browse);
@@ -77,7 +77,7 @@ public class SourceControllerTests
     {
         await using var ws = await TestWorkspace.CreateAsync();
         var revision = 1;
-        var catalog = new FakeCatalog { Browse = (source, pre) => Task.FromResult(Page(source ?? "local", $"P{revision}.{pre}")) };
+        var catalog = new FakeCatalog { Browse = (_, pre) => Task.FromResult(Page("local", $"P{revision}.{pre}")) };
         var controller = Controller(ws, catalog);
         await controller.OpenAsync(ws.Root, null, CancellationToken.None);
         await controller.LoadBrowseAsync(false, CancellationToken.None);
@@ -95,15 +95,15 @@ public class SourceControllerTests
     {
         await using var ws = await TestWorkspace.CreateAsync();
         var slow = new TaskCompletionSource<BrowsePage>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var catalog = new FakeCatalog { Browse = (source, _) => source is null ? slow.Task : Task.FromResult(Page("local", "New")) };
+        var catalog = new FakeCatalog { Browse = (source, _) => source.IsAll ? slow.Task : Task.FromResult(Page("local", "New")) };
         var controller = Controller(ws, catalog);
         await controller.OpenAsync(ws.Root, null, CancellationToken.None);
         var old = controller.LoadBrowseAsync(false, CancellationToken.None);
-        await controller.SelectSourceAsync("local", CancellationToken.None);
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["local"]), CancellationToken.None);
         slow.SetResult(Page("old", "Old"));
         await old;
         Assert.Equal("New", controller.State.Browse!.Sources[0].Page.Items[0].PackageId);
-        Assert.Equal("local", controller.State.SelectedSourceName);
+        Assert.Equal(["local"], controller.State.SelectedSources.Resolve(controller.State.Sources));
     }
 
     [Fact]
@@ -112,27 +112,28 @@ public class SourceControllerTests
         await using var ws = await TestWorkspace.CreateAsync();
         var sdk = new FakeSdk { Inventory = new PackageInventory([new PackageOccurrence("P", "net10.0", "Installed", "1.0.0", "1.0.0", ReferenceKind.Direct, "P")]) };
         var catalog = new FakeCatalog { SourceSearch = (query, source) => Task.FromResult(new SearchPage(
-            [new SearchHit(query, "1.0.0", source ?? "all", null)], 0, 20, false, [])) };
+            [new SearchHit(query, "1.0.0", source.Resolve(NuGetConfigReader.Load(ws.Root).Sources).Single(), null)], 0, 20, false, [])) };
         var controller = Controller(ws, catalog, sdk);
         await controller.OpenAsync(ws.Root, null, CancellationToken.None);
         var installed = controller.State.Installed.ToArray();
         await controller.SearchAsync("Example", 0, CancellationToken.None);
-        await controller.SelectSourceAsync("local", CancellationToken.None);
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["local"]), CancellationToken.None);
         Assert.Equal("local", Assert.Single(controller.State.Search!.Items).SourceName);
         Assert.Equal(installed, controller.State.Installed);
     }
 
     [Fact]
-    public async Task RemovedSourceResetsSelectionOnRefresh()
+    public async Task RemovedSourceLeavesExplicitEmptySelectionOnRefresh()
     {
         await using var ws = await TestWorkspace.CreateAsync();
         ws.WriteNuGetConfig($"""<add key="second" value="{ws.FeedDirectory}" />""");
         var controller = Controller(ws, new FakeCatalog());
         await controller.OpenAsync(ws.Root, null, CancellationToken.None);
-        await controller.SelectSourceAsync("second", CancellationToken.None);
+        await controller.SelectSourcesAsync(SourceSelection.Subset(["second"]), CancellationToken.None);
         ws.WriteNuGetConfig();
         await controller.RefreshAsync(CancellationToken.None);
-        Assert.Null(controller.State.SelectedSourceName);
+        Assert.False(controller.State.SelectedSources.IsAll);
+        Assert.Empty(controller.State.SelectedSources.Resolve(controller.State.Sources));
         Assert.DoesNotContain(controller.State.Sources, s => s.Name == "second");
     }
 

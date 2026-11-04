@@ -229,11 +229,12 @@ internal sealed class MainWindow : Window
             if (_suppressEvents || !_browseMode || _state.Workspace is null) return;
             var index = _sourcePicker.SelectedIndex;
             var source = index > 0 && index <= _state.Sources.Count ? _state.Sources[index - 1].Name : null;
-            if (string.Equals(source, _state.SelectedSourceName, StringComparison.OrdinalIgnoreCase)) return;
+            var selection = source is null ? SourceSelection.All : SourceSelection.Subset([source]);
+            if (selection.Equals(_state.SelectedSources)) return;
             _searchCts?.Cancel();
             _detailsCts?.Cancel();
             var query = _searchBox.Text?.Trim() ?? "";
-            Fire(() => _controller.SelectSourceAsync(source, CancellationToken.None, query));
+            Fire(() => _controller.SelectSourcesAsync(selection, CancellationToken.None, query));
         });
         var middle = new DockPanel().Children(
             new StackPanel().Vertical().Spacing(6).Margin(8, 8, 8, 4).DockTop().Children(
@@ -327,8 +328,9 @@ internal sealed class MainWindow : Window
             _sourcesKey = state.Sources;
             _sourcePicker.Items(new[] { "全部源" }.Concat(state.Sources.Select(s => s.Name)).ToArray());
         }
-        var sourceIndex = state.SelectedSourceName is null ? 0
-            : state.Sources.ToList().FindIndex(s => string.Equals(s.Name, state.SelectedSourceName, StringComparison.OrdinalIgnoreCase)) + 1;
+        var resolved = state.SelectedSources.Resolve(state.Sources);
+        var sourceIndex = state.SelectedSources.IsAll || resolved.Count != 1 ? 0
+            : state.Sources.ToList().FindIndex(s => string.Equals(s.Name, resolved[0], StringComparison.OrdinalIgnoreCase)) + 1;
         if (_sourcePicker.SelectedIndex != sourceIndex) _sourcePicker.SelectedIndex = sourceIndex;
     }
 
@@ -522,7 +524,7 @@ internal sealed class MainWindow : Window
                 RenderSearchItems(group.Page, state);
                 if (group.Page.Diagnostics.Count > 0)
                 {
-                    _middle.Add(new Button().Content(state.SelectedSourceName is null ? "重新加载全部包源" : "重试包源")
+                    _middle.Add(new Button().Content(state.SelectedSources.IsAll ? "重新加载全部包源" : "重试包源")
                         .Margin(0, 6, 0, 0).IsEnabled(!state.SearchLoading && !state.IsBusy)
                         .OnClick(() => Fire(() => _controller.LoadBrowseAsync(true, CancellationToken.None))));
                 }
