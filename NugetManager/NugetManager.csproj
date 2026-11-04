@@ -11,6 +11,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <WarningsAsErrors>$(WarningsAsErrors);CS1591</WarningsAsErrors>
     <PublishAot>true</PublishAot>
+    <AssemblyName>nugetmgr</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
