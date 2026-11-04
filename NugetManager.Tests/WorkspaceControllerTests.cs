@@ -209,6 +209,28 @@ public class WorkspaceControllerTests
     }
 
     [Fact]
+    public async Task ProtectedReferenceInAnyFrameworkDisablesProjectVersionActions()
+    {
+        var h = Create();
+        h.Sdk.References[ApiPath].Add(Ref(ApiPath, "Example.Json") with
+        {
+            Framework = "net8.0",
+            IsWritable = false,
+            WriteBlockReason = "protected framework",
+        });
+        await h.Controller.OpenAsync(Root, null, CancellationToken.None);
+        await h.Controller.SelectPackageAsync("Example.Json", "2.0.0", null, CancellationToken.None);
+        var row = Assert.Single(PresentationModel.BuildProjectRows(h.Controller.State), r => r.ProjectPath == ApiPath);
+        Assert.False(row.ActionEnabled);
+        Assert.False(row.VersionChange!.IsEnabled);
+        Assert.Equal("protected framework", TestMessages.Zh(row.Note));
+        await h.Controller.SelectPackageAsync("Example.Json", "0.5.0", null, CancellationToken.None);
+        row = Assert.Single(PresentationModel.BuildProjectRows(h.Controller.State), r => r.ProjectPath == ApiPath);
+        Assert.Equal(PackageAction.Downgrade, row.VersionChange!.Action);
+        Assert.False(row.VersionChange.IsEnabled);
+    }
+
+    [Fact]
     public async Task WholeWorkspaceRestoresAllProjects()
     {
         var h = await OpenAsync();

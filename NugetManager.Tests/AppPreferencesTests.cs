@@ -32,11 +32,25 @@ public class AppPreferencesTests : IDisposable
     [InlineData("{\"theme\":99,\"language\":0}")]
     [InlineData("{}")]
     [InlineData("null")]
+    [InlineData("{\"theme\":0,\"language\":0,\"quickMode\":\"yes\"}")]
     public async Task CorruptPreferencesAreReported(string contents)
     {
         Directory.CreateDirectory(_directory);
         await File.WriteAllTextAsync(FilePath, contents);
         await Assert.ThrowsAnyAsync<JsonException>(() => new AppPreferenceStore(FilePath).LoadAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task QuickModePersistsAndLegacyPreferencesDefaultOff()
+    {
+        Directory.CreateDirectory(_directory);
+        await File.WriteAllTextAsync(FilePath, """{"theme":1,"language":2}""");
+        var store = new AppPreferenceStore(FilePath);
+        Assert.False((await store.LoadAsync(CancellationToken.None)).QuickMode);
+        await store.SaveAsync(new(UiTheme.Dark, UiLanguage.English, QuickMode: true), CancellationToken.None);
+        Assert.True((await store.LoadAsync(CancellationToken.None)).QuickMode);
+        await store.SaveAsync(new(UiTheme.Dark, UiLanguage.English, QuickMode: false), CancellationToken.None);
+        Assert.False((await store.LoadAsync(CancellationToken.None)).QuickMode);
     }
 
     [Fact]
@@ -49,6 +63,16 @@ public class AppPreferencesTests : IDisposable
             await Assert.ThrowsAnyAsync<IOException>(() => store.SaveAsync(new(UiTheme.Dark, UiLanguage.Korean), CancellationToken.None));
         Assert.Equal(before, await File.ReadAllBytesAsync(FilePath));
         Assert.Single(Directory.GetFiles(_directory));
+    }
+
+    [Fact]
+    public async Task FailedQuickModeWritePreservesSavedChoice()
+    {
+        var store = new AppPreferenceStore(FilePath);
+        await store.SaveAsync(new(QuickMode: false), CancellationToken.None);
+        using (new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            await Assert.ThrowsAnyAsync<IOException>(() => store.SaveAsync(new(QuickMode: true), CancellationToken.None));
+        Assert.False((await store.LoadAsync(CancellationToken.None)).QuickMode);
     }
 
     public void Dispose()

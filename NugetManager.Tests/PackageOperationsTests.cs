@@ -175,9 +175,13 @@ public class PackageOperationsTests
         Assert.Contains("Example.Json", await File.ReadAllTextAsync(core));
     }
 
-    [Fact]
-    public async Task ConditionalOverrideDoesNotCreateUnconditionalDuplicate()
+    [Theory]
+    [InlineData("Upgrade")]
+    [InlineData("Downgrade")]
+    [InlineData("SwitchVersion")]
+    public async Task ConditionalOverrideDoesNotCreateUnconditionalDuplicate(string actionName)
     {
+        var action = Enum.Parse<PackageAction>(actionName);
         await using var ws = await FeedAsync();
         var project = ws.Write("Lib/Lib.csproj", """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -191,13 +195,39 @@ public class PackageOperationsTests
         var original = await File.ReadAllBytesAsync(project);
         var ops = Operations(ws);
 
-        var upgrade = await ops.PlanAsync(WorkspaceOf(ws, project), [new(PackageAction.Upgrade, project, "Example.Json", "3.0.0")], CancellationToken.None);
+        var upgrade = await ops.PlanAsync(WorkspaceOf(ws, project), [new(action, project, "Example.Json", "3.0.0")], CancellationToken.None);
         var install = await ops.PlanAsync(WorkspaceOf(ws, project), [new(PackageAction.Install, project, "Example.Json", "3.0.0")], CancellationToken.None);
 
         Assert.NotEmpty(upgrade.Blockers);
         Assert.NotEmpty(install.Blockers);
         await Assert.ThrowsAsync<InvalidOperationException>(() => ops.ExecuteAsync(upgrade, NoProgress, CancellationToken.None));
         Assert.Equal(original, await File.ReadAllBytesAsync(project));
+    }
+
+    [Theory]
+    [InlineData("Downgrade", false, "降级")]
+    [InlineData("SwitchVersion", true, "切换")]
+    public async Task VersionChangesUseConfirmedSdkTransaction(string actionName, bool central, string expectedLabel)
+    {
+        var action = Enum.Parse<PackageAction>(actionName);
+        await using var ws = await FeedAsync();
+        if (central) ws.WriteCentralProps(("Example.Json", "2.0.0"));
+        var project = central
+            ? ws.Write("App\\App.csproj", """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="Example.Json" /></ItemGroup></Project>""")
+            : ws.WriteProject("App\\App.csproj", "net10.0", ("Example.Json", "2.0.0"));
+        await ws.RestoreAsync(project);
+        var workspace = WorkspaceOf(ws, project);
+        var ops = Operations(ws);
+        var plan = await ops.PlanAsync(workspace, [new(action, project, "Example.Json", "1.0.0")], CancellationToken.None);
+        Assert.True(plan.CanExecute);
+        var confirmation = PresentationModel.BuildConfirmation(plan, WorkspaceScope.All);
+        Assert.Contains(expectedLabel, TestMessages.Zh(confirmation.Title));
+        Assert.Contains(expectedLabel, TestMessages.Zh(Assert.Single(confirmation.Changes)));
+        Assert.Contains("降级", string.Join(" ", plan.Warnings.Select(TestMessages.Zh)));
+        var result = await ops.ExecuteAsync(plan, NoProgress, CancellationToken.None);
+        Assert.Equal(OperationStatus.Succeeded, result.Status);
+        var inventory = await ws.CreateSdk().ReadInventoryAsync(workspace, CancellationToken.None);
+        Assert.Equal("1.0.0", Assert.Single(inventory.Occurrences, o => o.PackageId == "Example.Json").ResolvedVersion);
     }
 
     [Fact]
@@ -265,12 +295,16 @@ public class PackageOperationsTests
         Assert.Equal("1.0.0", await ResolvedAsync(ws, a, "Example.Json"));
     }
 
-    [Fact]
-    public async Task CancellationRollsBackWithFreshToken()
+    [Theory]
+    [InlineData("Upgrade", "1.0.0", "3.0.0")]
+    [InlineData("Downgrade", "3.0.0", "1.0.0")]
+    [InlineData("SwitchVersion", "3.0.0", "2.0.0")]
+    public async Task CancellationRollsBackWithFreshToken(string actionName, string from, string to)
     {
+        var action = Enum.Parse<PackageAction>(actionName);
         await using var ws = await FeedAsync();
-        var a = ws.WriteProject("A/A.csproj", "net10.0", ("Example.Json", "1.0.0"));
-        var b = ws.WriteProject("B/B.csproj", "net10.0", ("Example.Json", "1.0.0"));
+        var a = ws.WriteProject("A/A.csproj", "net10.0", ("Example.Json", from));
+        var b = ws.WriteProject("B/B.csproj", "net10.0", ("Example.Json", from));
         await ws.RestoreAsync(a);
         await ws.RestoreAsync(b);
         var originalA = await File.ReadAllBytesAsync(a);
@@ -288,7 +322,7 @@ public class PackageOperationsTests
         };
         var ops = Operations(ws, sdk);
         var plan = await ops.PlanAsync(WorkspaceOf(ws, a, b),
-            [new(PackageAction.Upgrade, a, "Example.Json", "3.0.0"), new(PackageAction.Upgrade, b, "Example.Json", "3.0.0")], CancellationToken.None);
+            [new(action, a, "Example.Json", to), new(action, b, "Example.Json", to)], CancellationToken.None);
 
         var result = await ops.ExecuteAsync(plan, NoProgress, cts.Token);
 
