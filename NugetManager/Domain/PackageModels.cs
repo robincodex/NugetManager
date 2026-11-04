@@ -1,3 +1,5 @@
+using NugetManager.Packages;
+
 namespace NugetManager.Domain;
 
 internal enum ReferenceKind
@@ -69,6 +71,12 @@ internal sealed record UpdateReport(IReadOnlyList<UpdateCandidate> Candidates, I
 internal sealed record SearchHit(string PackageId, string Version, string SourceName, string? Description);
 
 internal sealed record SearchPage(IReadOnlyList<SearchHit> Items, int Skip, int Take, bool HasMore, IReadOnlyList<SourceDiagnostic> Diagnostics);
+
+internal enum BrowseKind { Popular, Ordinary }
+
+internal sealed record BrowseSourcePage(NuGetSource Source, BrowseKind Kind, SearchPage Page);
+
+internal sealed record BrowsePage(IReadOnlyList<BrowseSourcePage> Sources);
 
 internal sealed record DependencyItem(string PackageId, string VersionRange);
 

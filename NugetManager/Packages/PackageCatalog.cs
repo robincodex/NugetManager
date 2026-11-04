@@ -7,12 +7,14 @@ internal interface IPackageCatalog
 {
     Task<UpdateReport> FindUpdatesAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation> evaluations, WorkspaceScope scope, bool includePrerelease, CancellationToken ct);
 
-    Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct);
+    Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct, string? sourceName = null);
 
-    Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct);
+    Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct, string? sourceName = null);
+
+    Task<BrowsePage> BrowseAsync(Workspace workspace, string? sourceName, bool includePrerelease, CancellationToken ct);
 }
 
-internal sealed class PackageCatalog(ISdkClient sdk) : IPackageCatalog
+internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popular = null) : IPackageCatalog
 {
     public async Task<UpdateReport> FindUpdatesAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation> evaluations, WorkspaceScope scope,
         bool includePrerelease, CancellationToken ct)
@@ -87,9 +89,10 @@ internal sealed class PackageCatalog(ISdkClient sdk) : IPackageCatalog
             ?? (matches.Count > 0 && evaluation.Frameworks.Count == 1 ? matches[0] : null);
     }
 
-    public async Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct)
+    public async Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct, string? sourceName = null)
     {
-        var output = await sdk.SearchAsync(workspace.Directory, query, skip, take, includePrerelease, false, null, ct).ConfigureAwait(false);
+        var selected = FindSource(workspace, sourceName);
+        var output = await sdk.SearchAsync(workspace.Directory, query, skip, take, includePrerelease, false, selected?.Location, ct).ConfigureAwait(false);
         var hits = new List<SearchHit>();
         var hasMore = false;
         foreach (var source in output.SearchResult ?? [])
@@ -102,21 +105,24 @@ internal sealed class PackageCatalog(ISdkClient sdk) : IPackageCatalog
                 {
                     continue;
                 }
-                if (hits.Any(h => string.Equals(h.PackageId, package.Id, StringComparison.OrdinalIgnoreCase)))
+                var name = selected?.Name ?? source.SourceName ?? "";
+                if (hits.Any(h => string.Equals(h.PackageId, package.Id, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(h.SourceName, name, StringComparison.OrdinalIgnoreCase)))
                 {
                     continue;
                 }
-                hits.Add(new SearchHit(package.Id, package.LatestVersion ?? package.Version ?? "", source.SourceName ?? "", package.Description));
+                hits.Add(new SearchHit(package.Id, package.LatestVersion ?? package.Version ?? "", name, package.Description));
             }
         }
         return new SearchPage(hits, skip, take, hasMore, ToDiagnostics(output));
     }
 
-    public async Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct)
+    public async Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct, string? sourceName = null)
     {
-        var output = await sdk.SearchAsync(workspace.Directory, packageId, 0, 0, includePrerelease, true, null, ct).ConfigureAwait(false);
+        var selected = FindSource(workspace, sourceName);
+        var output = await sdk.SearchAsync(workspace.Directory, packageId, 0, 0, includePrerelease, true, selected?.Location, ct).ConfigureAwait(false);
         var versions = new List<string>();
-        string? sourceName = null;
+        string? resultSourceName = selected?.Name;
         foreach (var source in output.SearchResult ?? [])
         {
             foreach (var package in source.Packages ?? [])
@@ -128,7 +134,7 @@ internal sealed class PackageCatalog(ISdkClient sdk) : IPackageCatalog
                 {
                     continue;
                 }
-                sourceName ??= source.SourceName;
+                resultSourceName ??= source.SourceName;
                 if (!versions.Contains(version, StringComparer.OrdinalIgnoreCase))
                 {
                     versions.Add(version);
@@ -136,8 +142,45 @@ internal sealed class PackageCatalog(ISdkClient sdk) : IPackageCatalog
             }
         }
         versions.Sort((a, b) => NuGetVersionComparer.Instance.Compare(b, a));
-        return new PackageVersions(packageId, versions, ToDiagnostics(output)) { SourceName = sourceName };
+        return new PackageVersions(packageId, versions, ToDiagnostics(output)) { SourceName = resultSourceName };
     }
+
+    public async Task<BrowsePage> BrowseAsync(Workspace workspace, string? sourceName, bool includePrerelease, CancellationToken ct)
+    {
+        var settings = NuGetConfigReader.Load(workspace.Directory);
+        var sources = sourceName is null ? settings.Sources.Where(s => s.IsEnabled).ToList()
+            : new List<NuGetSource> { FindSource(workspace, sourceName)! };
+        var take = sourceName is null ? 10 : 30;
+        using var gate = new SemaphoreSlim(4);
+        var groups = await Task.WhenAll(sources.Select(async source =>
+        {
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var result = popular is null ? null : await popular.ReadAsync(source, take, includePrerelease, ct).ConfigureAwait(false);
+                if (result is { Supported: true })
+                {
+                    return new BrowseSourcePage(source, BrowseKind.Popular, new SearchPage(result.Items.Take(take).ToList(), 0, take, false, result.Diagnostics));
+                }
+                var page = await SearchAsync(workspace, "", 0, take, includePrerelease, ct, source.Name).ConfigureAwait(false);
+                return new BrowseSourcePage(source, BrowseKind.Ordinary, page with { Items = page.Items.Take(take).ToList(), HasMore = false });
+            }
+            catch (Exception ex) when (ex is SdkCommandException or SdkOutputException)
+            {
+                return new BrowseSourcePage(source, BrowseKind.Ordinary,
+                    new SearchPage([], 0, take, false, [new SourceDiagnostic(source.Name, "BrowseFailed", ex.Message)]));
+            }
+            finally
+            {
+                gate.Release();
+            }
+        })).ConfigureAwait(false);
+        return new BrowsePage(groups);
+    }
+
+    private static NuGetSource? FindSource(Workspace workspace, string? name) => name is null ? null
+        : NuGetConfigReader.Load(workspace.Directory).Sources.FirstOrDefault(s => s.IsEnabled && string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new SdkOutputException($"包源不存在或已禁用：{name}");
 
     private static List<SourceDiagnostic> ToDiagnostics(SearchOutput output) =>
         (output.Problems ?? []).Select(p => new SourceDiagnostic("", p.ProblemType ?? "SourceError", p.Text ?? "包源查询失败。")).ToList();

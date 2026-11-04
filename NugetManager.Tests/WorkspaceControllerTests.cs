@@ -60,11 +60,14 @@ internal sealed class FakeCatalog : IPackageCatalog
         return UpdateError is { } error ? Task.FromException<UpdateReport>(error) : Task.FromResult(Report);
     }
 
-    public Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct) =>
+    public Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct, string? sourceName = null) =>
         Search?.Invoke(query, skip) ?? Task.FromResult(new SearchPage([], skip, take, false, []));
 
-    public Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct) =>
+    public Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct, string? sourceName = null) =>
         Task.FromResult(new PackageVersions(packageId, ["3.0.0", "2.0.0", "1.0.0"], []));
+
+    public Task<BrowsePage> BrowseAsync(Workspace workspace, string? sourceName, bool includePrerelease, CancellationToken ct) =>
+        Task.FromResult(new BrowsePage([]));
 }
 
 internal sealed class FakeMetadata : IPackageMetadataReader

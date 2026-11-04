@@ -111,6 +111,25 @@ internal sealed class RecoveryEntry
     public string? Message { get; set; }
 }
 
+internal sealed class PopularOutput
+{
+    public long? TotalHits { get; set; }
+    public List<PopularPackage>? Data { get; set; }
+}
+
+internal sealed class PopularPackage
+{
+    public PopularRegistration? PackageRegistration { get; set; }
+    public string? Version { get; set; }
+    public string? Description { get; set; }
+}
+
+internal sealed class PopularRegistration
+{
+    public string? Id { get; set; }
+    public long? DownloadCount { get; set; }
+}
+
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, WriteIndented = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -119,4 +138,5 @@ internal sealed class RecoveryEntry
 [JsonSerializable(typeof(MsBuildOutput))]
 [JsonSerializable(typeof(V3ServiceIndex))]
 [JsonSerializable(typeof(RecoveryManifest))]
+[JsonSerializable(typeof(PopularOutput))]
 internal sealed partial class SdkJsonContext : JsonSerializerContext;

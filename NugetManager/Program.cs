@@ -35,7 +35,7 @@ static class Program
         var controller = new WorkspaceController(
             new WorkspaceDiscovery(),
             sdk,
-            new PackageCatalog(sdk),
+            new PackageCatalog(sdk, new PopularPackageReader(http)),
             new PackageMetadataReader(http),
             new PackageOperations(sdk, recoveryDirectory));
 
