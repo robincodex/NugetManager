@@ -160,7 +160,7 @@ internal sealed class WorkspaceController(
         var generation = Interlocked.Increment(ref _loadGeneration);
         Interlocked.Increment(ref _searchGeneration);
         lock (_gate) _browseCache.Clear();
-        Publish(s => s with { Status = WorkspaceStatus.Loading, IsBusy = true, StatusMessage = "正在刷新…", Error = null });
+        Publish(s => s with { Status = WorkspaceStatus.Loading, IsBusy = true, SearchLoading = false, StatusMessage = "正在刷新…", Error = null });
         try
         {
             await LoadAsync(workspace, generation, ct).ConfigureAwait(false);
@@ -183,7 +183,7 @@ internal sealed class WorkspaceController(
     {
         EnsureNotWriting();
         Interlocked.Increment(ref _searchGeneration);
-        Publish(s => s with { IncludePrerelease = include });
+        Publish(s => s with { IncludePrerelease = include, SearchLoading = false });
         if (State.Workspace is null)
         {
             return;
@@ -422,6 +422,7 @@ internal sealed class WorkspaceController(
         {
             Status = WorkspaceStatus.Writing,
             IsBusy = true,
+            SearchLoading = false,
             Error = null,
             StatusMessage = "正在写入…",
             Progress = null,

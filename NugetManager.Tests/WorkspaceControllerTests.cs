@@ -101,6 +101,46 @@ internal sealed class FakeOperations : IPackageOperations
 
 public class WorkspaceControllerTests
 {
+    [Theory]
+    [InlineData("refresh")]
+    [InlineData("prerelease")]
+    [InlineData("write")]
+    public async Task InvalidatedSearchStopsLoadingEvenWhenReplacementOperationDoesNotComplete(string action)
+    {
+        var h = Create();
+        await h.Controller.OpenAsync(Root, null, CancellationToken.None);
+        var pending = new TaskCompletionSource<SearchPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Catalog.Search = (_, _) => pending.Task;
+        var search = h.Controller.SearchAsync("pending", 0, CancellationToken.None);
+        Assert.True(h.Controller.State.SearchLoading);
+        try
+        {
+            if (action == "refresh")
+            {
+                h.Sdk.InventoryError = new OperationCanceledException();
+                await h.Controller.RefreshAsync(CancellationToken.None);
+            }
+            else if (action == "prerelease")
+            {
+                h.Catalog.UpdateError = new OperationCanceledException();
+                await h.Controller.SetIncludePrereleaseAsync(true, CancellationToken.None);
+            }
+            else
+            {
+                h.Operations.Execute = (_, _) => Task.FromResult(new OperationResult(OperationStatus.RolledBack, "cancelled", []));
+                await h.Controller.ExecuteConfirmedAsync(new OperationPlan([], [], [], [], []), CancellationToken.None);
+            }
+            Assert.False(h.Controller.State.SearchLoading);
+        }
+        finally
+        {
+            pending.SetResult(new SearchPage([], 0, 20, false, []));
+            await search;
+        }
+        Assert.False(h.Controller.State.SearchLoading);
+        Assert.Null(h.Controller.State.Search);
+    }
+
     private const string Root = @"C:\ws";
     private static readonly string ApiPath = Path.Combine(Root, "Api", "Api.csproj");
     private static readonly string CorePath = Path.Combine(Root, "Core", "Core.csproj");
