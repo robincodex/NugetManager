@@ -25,18 +25,14 @@ static class Program
             NativeMessageBox.Show(AppLocalization.Format(new UiMessage(TextKey.PreferencesReadFailed, ex.Message),
                 preferences.Language, CultureInfo.CurrentUICulture), "NuGet", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Warning);
         }
-        string? directory = null;
         if (args.Length > 1)
         {
             return Fail(M(TextKey.M217), preferences.Language);
         }
-        if (args.Length == 1)
+        var directory = ResolveStartupDirectory(args);
+        if (!Directory.Exists(directory))
         {
-            directory = Path.GetFullPath(args[0]);
-            if (!Directory.Exists(directory))
-            {
-                return Fail(MF(TextKey.M218, $"工作目录不存在：{directory}"), preferences.Language);
-            }
+            return Fail(MF(TextKey.M218, $"工作目录不存在：{directory}"), preferences.Language);
         }
 
         var recoveryDirectory = Path.Combine(
@@ -73,6 +69,9 @@ static class Program
             return Fail(M(TextKey.M220) + UiMessage.FromException(ex), mainWindow?.Language ?? preferences.Language);
         }
     }
+
+    internal static string ResolveStartupDirectory(string[] args) =>
+        Path.GetFullPath(args.Length == 0 ? Environment.CurrentDirectory : args[0]);
 
     private static int Fail(UiMessage message, UiLanguage language)
     {
