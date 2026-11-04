@@ -55,6 +55,8 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             switch (change.Action)
             {
                 case PackageAction.Upgrade:
+                case PackageAction.Downgrade:
+                case PackageAction.SwitchVersion:
                 case PackageAction.Uninstall:
                     if (refs.Count == 0)
                     {
@@ -88,7 +90,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             var current = refs.Select(r => r.VersionExpression).FirstOrDefault(v => v is not null);
             if (current is not null && NuGetVersionComparer.TryParse(current, out _) && NuGetVersionComparer.IsMajorChange(current, version))
             {
-                AddUnique(warnings, MF(TextKey.M015, $"{change.PackageId} 将从 {current} 升级到 {version}，跨越主版本，可能包含不兼容变更。"));
+                AddUnique(warnings, new UiMessage(TextKey.MajorVersionChange, change.PackageId, current, version));
             }
             if (current is not null && NuGetVersionComparer.TryParse(current, out _) && !NuGetVersionComparer.IsNewer(version, current)
                 && !string.Equals(current, version, StringComparison.OrdinalIgnoreCase))
@@ -342,6 +344,8 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
     {
         PackageAction.Install => M(TextKey.M034),
         PackageAction.Uninstall => M(TextKey.M035),
+        PackageAction.Downgrade => M(TextKey.Downgrade),
+        PackageAction.SwitchVersion => M(TextKey.SwitchVersion),
         _ => M(TextKey.M036),
     };
 

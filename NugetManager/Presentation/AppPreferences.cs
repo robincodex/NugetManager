@@ -6,7 +6,7 @@ namespace NugetManager.Presentation;
 internal enum UiLanguage { System, SimplifiedChinese, English, Korean, Russian }
 internal enum UiTheme { System, Light, Dark }
 
-internal sealed record AppPreferences(UiTheme Theme = UiTheme.System, UiLanguage Language = UiLanguage.System);
+internal sealed record AppPreferences(UiTheme Theme = UiTheme.System, UiLanguage Language = UiLanguage.System, bool QuickMode = false);
 
 internal sealed class AppPreferenceStore(string path)
 {
@@ -19,7 +19,7 @@ internal sealed class AppPreferenceStore(string path)
             if (dto?.Theme is not { } theme || dto.Language is not { } language
                 || !Enum.IsDefined(theme) || !Enum.IsDefined(language))
                 throw new JsonException("Invalid preference values.");
-            return new(theme, language);
+            return new(theme, language, dto.QuickMode);
         }
         catch (FileNotFoundException) { return new(); }
         catch (DirectoryNotFoundException) { return new(); }
@@ -36,7 +36,7 @@ internal sealed class AppPreferenceStore(string path)
         {
             await using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, true))
             {
-                await JsonSerializer.SerializeAsync(file, new PreferenceDto { Theme = preferences.Theme, Language = preferences.Language },
+                await JsonSerializer.SerializeAsync(file, new PreferenceDto { Theme = preferences.Theme, Language = preferences.Language, QuickMode = preferences.QuickMode },
                     PreferenceJsonContext.Default.PreferenceDto, ct).ConfigureAwait(false);
                 await file.FlushAsync(ct).ConfigureAwait(false);
                 file.Flush(true);
@@ -56,6 +56,7 @@ internal sealed class PreferenceDto
 {
     public UiTheme? Theme { get; set; }
     public UiLanguage? Language { get; set; }
+    public bool QuickMode { get; set; }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]

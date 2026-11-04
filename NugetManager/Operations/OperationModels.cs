@@ -22,6 +22,8 @@ internal enum PackageAction
     Upgrade,
     Install,
     Uninstall,
+    Downgrade,
+    SwitchVersion,
 }
 
 internal sealed record PackageChange(PackageAction Action, string ProjectPath, string PackageId, string? Version);

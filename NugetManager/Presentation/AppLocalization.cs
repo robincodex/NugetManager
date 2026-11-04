@@ -112,6 +112,19 @@ internal static partial class AppLocalization
         [TextKey.BrowserDidNotStart] = ["系统浏览器未启动。", "The system browser did not start.", "시스템 브라우저가 시작되지 않았습니다.", "Системный браузер не запустился."],
         [TextKey.UnknownInstalledSources] = ["{0} 个包的还原来源未知或不在当前包源中，仅在全部包源中显示。", "{0} packages have an unknown or unconfigured restore source and appear only under All sources.", "패키지 {0}개의 복원 소스를 알 수 없거나 현재 소스에 없어 모든 소스에서만 표시됩니다.", "Источник восстановления {0} пакетов неизвестен или не настроен; они видны только при выборе всех источников."],
         [TextKey.SelectInstalledSources] = ["请选择包源以显示已安装的包。", "Select sources to show installed packages.", "설치된 패키지를 표시할 소스를 선택하세요.", "Выберите источники для отображения установленных пакетов."],
+        [TextKey.UpgradeToVersion] = ["升级到 {0}", "Upgrade to {0}", "{0}(으)로 업그레이드", "Обновить до {0}"],
+        [TextKey.DowngradeToVersion] = ["降级到 {0}", "Downgrade to {0}", "{0}(으)로 다운그레이드", "Понизить до {0}"],
+        [TextKey.SwitchToVersion] = ["切换到版本 {0}", "Switch to version {0}", "버전 {0}(으)로 전환", "Переключить на версию {0}"],
+        [TextKey.Downgrade] = ["降级", "Downgrade", "다운그레이드", "Понизить версию"],
+        [TextKey.QuickMode] = ["快速模式", "Quick mode", "빠른 모드", "Быстрый режим"],
+        [TextKey.QuickModeHint] = ["立即执行所有包操作，不显示确认（包括批量操作、降级和集中版本影响）；保留安全检查与回滚。此设置会保存。", "Execute all package actions without confirmation, including batch actions, downgrades and central version changes. Safety checks and rollback remain enabled. This setting is saved.", "일괄 작업, 다운그레이드 및 중앙 버전 변경을 포함한 모든 패키지 작업을 확인 없이 실행합니다. 안전 검사와 롤백은 유지되며 설정은 저장됩니다.", "Выполнять все действия без подтверждения, включая массовые операции, понижение и централизованные версии. Проверки безопасности и откат сохраняются. Настройка сохраняется."],
+        [TextKey.OperationBlocked] = ["无法执行包操作", "Package operation cannot proceed", "패키지 작업을 실행할 수 없습니다", "Невозможно выполнить операцию с пакетом"],
+        [TextKey.SwitchVersion] = ["切换版本", "Switch version", "버전 전환", "Сменить версию"],
+        [TextKey.DowngradePackage] = ["降级 {0} 到 {1}（{2}）", "Downgrade {0} to {1} ({2})", "{0}을(를) {1}(으)로 다운그레이드 ({2})", "Понизить {0} до {1} ({2})"],
+        [TextKey.SwitchPackageVersion] = ["切换 {0} 到版本 {1}（{2}）", "Switch {0} to version {1} ({2})", "{0}을(를) 버전 {1}(으)로 전환 ({2})", "Переключить {0} на версию {1} ({2})"],
+        [TextKey.ConfirmDowngrade] = ["确认降级", "Confirm downgrade", "다운그레이드 확인", "Подтвердить понижение версии"],
+        [TextKey.ConfirmSwitchVersion] = ["确认切换版本", "Confirm version switch", "버전 전환 확인", "Подтвердить смену версии"],
+        [TextKey.MajorVersionChange] = ["{0} 将从 {1} 切换到 {2}，跨越主版本，可能包含不兼容变更。", "{0} will change from {1} to {2}, crossing a major version and potentially introducing incompatible changes.", "{0}이(가) {1}에서 {2}(으)로 변경됩니다. 주 버전 변경으로 호환되지 않는 변경 사항이 포함될 수 있습니다.", "{0} изменится с {1} на {2} с переходом между основными версиями; возможны несовместимые изменения."],
     };
 
     public static UiLanguage ResolveLanguage(UiLanguage language, CultureInfo culture) => language != UiLanguage.System ? language

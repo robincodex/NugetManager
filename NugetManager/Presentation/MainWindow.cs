@@ -35,6 +35,7 @@ internal sealed class MainWindow : Window
     private bool _savingPreferences;
     private ContextMenu? _openMenu;
     private static readonly Command OpenNuGetCommand = new("package.openNuGet", "Open NuGet");
+    private static readonly Command ProjectPackageCommand = new("package.projectAction", "Package action");
     private static readonly Command OpenGitHubCommand = new("package.openGitHub", "Open GitHub");
     private readonly object _pendingGate = new();
     private WorkspaceViewState? _pending;
@@ -51,6 +52,7 @@ internal sealed class MainWindow : Window
     private readonly Button _refreshButton = new();
     private readonly Button _cancelButton = new();
     private readonly CheckBox _prerelease = new();
+    private readonly CheckBox _quickMode = new();
     private readonly TextBlock _statusText = new();
     private readonly TextBlock _progressText = new();
     private readonly TextBlock _errorText = new();
@@ -81,6 +83,8 @@ internal sealed class MainWindow : Window
         _links = controller.CreateLinkMenu(new ExternalLinkOpener());
         Commands.Register<Uri>(OpenNuGetCommand, uri => Fire(() => _links.OpenAsync(uri)));
         Commands.Register<Uri>(OpenGitHubCommand, uri => Fire(() => _links.OpenAsync(uri)));
+        Commands.Register<PackageChange>(ProjectPackageCommand,
+            change => Fire(() => ApplyAsync(ct => _controller.PreviewChangesAsync([change], ct))));
         _state = controller.State;
         this.Title(L(TextKey.AppTitle)).Icon(IconSource.FromResource<MainWindow>("NugetManager.logo.ico"))
             .Resizable(1280, 800, minWidth: 980, minHeight: 560);
@@ -331,6 +335,11 @@ internal sealed class MainWindow : Window
                 Fire(() => RunBusyAsync(ct => _controller.SetIncludePrereleaseAsync(value == true, ct)));
             }
         });
+        _quickMode.Content(L(TextKey.QuickMode)).OnCheckedChanged(value =>
+        {
+            if (!_suppressEvents && !_savingPreferences && !_applying && !_state.IsBusy)
+                Fire(() => ChangePreferencesAsync(_preferences with { QuickMode = value == true }));
+        });
 
         var toolbar = new Border()
             .Background(HeaderRowColor)
@@ -341,8 +350,7 @@ internal sealed class MainWindow : Window
             .Child(new Grid()
                 .Columns("Auto,*,Auto")
                 .Children(
-                    new StackPanel().Horizontal().Spacing(8).Children(_openButton, _refreshButton, _prerelease),
-                    _workspaceText.Column(1).Margin(16, 0, 8, 0).CenterVertical().TextTrimming(TextTrimming.CharacterEllipsis),
+                    new StackPanel().Horizontal().Spacing(8).Children(_openButton, _refreshButton, _prerelease, _quickMode),
                     new StackPanel().Horizontal().Spacing(8).Column(2).Children(
                         _themePicker.Width(140), _languagePicker.Width(150))));
         _themePicker.OnSelectionChanged(_ =>
@@ -366,11 +374,12 @@ internal sealed class MainWindow : Window
             .Padding(10, 4)
             .DockBottom()
             .Child(new Grid()
-                .Columns("Auto,*,Auto")
+                .Columns("Auto,*,*,Auto")
                 .Children(
                     _statusText.CenterVertical(),
                     new StackPanel().Vertical().Column(1).CenterVertical().Margin(16, 0).Children(_progressText, _errorText),
-                    new StackPanel().Horizontal().Spacing(8).Column(2).Children(
+                    _workspaceText.Column(2).Margin(8, 0).CenterVertical().TextTrimming(TextTrimming.CharacterEllipsis),
+                    new StackPanel().Horizontal().Spacing(8).Column(3).Children(
                         _statusRing.Width(20).Height(20).CenterVertical().IsActive(false).IsVisible(false),
                         _cancelButton)));
         _surfaces.Add((statusBar, () => HeaderRowColor));
@@ -472,11 +481,17 @@ internal sealed class MainWindow : Window
 
     private void RenderChrome(WorkspaceViewState state)
     {
-        Title = L(TextKey.AppTitle);
+        var workspaceName = state.Workspace is { } workspace
+            ? Path.GetFileName(workspace.SolutionPath ?? Path.TrimEndingDirectorySeparator(workspace.Directory)) : null;
+        Title = string.IsNullOrEmpty(workspaceName) ? L(TextKey.AppTitle) : $"{L(TextKey.AppTitle)} — {workspaceName}";
         _openButton.Content(L(TextKey.OpenDirectory));
         _refreshButton.Content(L(TextKey.Refresh));
         _cancelButton.Content(L(TextKey.Cancel));
         _prerelease.Content(L(TextKey.Prerelease));
+        _quickMode.Content(L(TextKey.QuickMode));
+        _quickMode.ToolTip(L(TextKey.QuickModeHint));
+        _quickMode.IsChecked = _preferences.QuickMode;
+        _quickMode.IsEnabled = !_savingPreferences && !_applying && !state.IsBusy;
         _themePicker.Items([L(TextKey.System), L(TextKey.Light), L(TextKey.Dark)]);
         _themePicker.SelectedIndex = (int)_preferences.Theme;
         _languagePicker.Items([L(TextKey.System), "简体中文", "English", "한국어", "Русский"]);
@@ -491,6 +506,8 @@ internal sealed class MainWindow : Window
         _errorText.Foreground = OperationDialog.ErrorColor;
         _progressText.Foreground = OperationDialog.MutedColor;
         _workspaceText.Text = state.Workspace is { } w ? w.SolutionPath ?? w.Directory : L(TextKey.M088);
+        _workspaceText.ToolTip(_workspaceText.Text);
+        _workspaceText.Foreground = OperationDialog.MutedColor;
         _statusText.Text = state.StatusMessage is { } status ? F(status) : StatusLabel(state.Status);
         _progressText.Text = F(state.Progress);
         _progressText.IsVisible = state.Progress is not null && state.IsBusy;
@@ -869,30 +886,25 @@ internal sealed class MainWindow : Window
         {
             info.Add(Wrapped(note).Foreground(OperationDialog.WarningColor).FontSize(ThemeFontSize.Small));
         }
-        var grid = new Grid().Columns("*,Auto").Children(info);
+        var grid = new Grid().Columns("*,Auto,Auto").Children(info);
         if (row.ActionLabel is { } label)
         {
-            grid.Add(new Button()
-                .Content(F(label))
-                .WithTheme((theme, button) =>
-                {
-                    var palette = AppTheme.From(theme);
-                    var color = row.Action == ProjectAction.Install ? palette.Success : palette.Error;
-                    button.Foreground = color;
-                    button.Background = palette.ActionBackground(color);
-                    button.BorderBrush = color;
-                }, invokeImmediately: true)
-                .IsEnabled(row.ActionEnabled)
-                .Column(1)
-                .CenterVertical()
-                .Margin(8, 0, 0, 0)
-                .OnClick(() =>
-                {
-                    var change = row.Action == ProjectAction.Install
-                        ? new PackageChange(PackageAction.Install, row.ProjectPath, packageId, state.SelectedVersion)
-                        : new PackageChange(PackageAction.Uninstall, row.ProjectPath, packageId, null);
-                    Fire(() => ApplyAsync(ct => _controller.PreviewChangesAsync([change], ct)));
-                }));
+            var install = row.Action == ProjectAction.Install;
+            var change = install
+                ? new PackageChange(PackageAction.Install, row.ProjectPath, packageId, state.SelectedVersion)
+                : new PackageChange(PackageAction.Uninstall, row.ProjectPath, packageId, null);
+            grid.Add(ProjectActionButton(label, install ? GlyphKind.Plus : GlyphKind.Minus, row.ActionEnabled, change).Column(2));
+        }
+        if (row.VersionChange is { } version)
+        {
+            var glyph = version.Action switch
+            {
+                PackageAction.Upgrade => GlyphKind.ChevronUp,
+                PackageAction.Downgrade => GlyphKind.ChevronDown,
+                _ => GlyphKind.ChevronRight,
+            };
+            grid.Add(ProjectActionButton(version.Label, glyph, version.IsEnabled,
+                new(version.Action, row.ProjectPath, packageId, version.Version)).Column(1));
         }
         return new Border()
             .Background(AppTheme.Current.Row)
@@ -902,6 +914,29 @@ internal sealed class MainWindow : Window
             .Padding(8, 6)
             .Child(grid);
     }
+
+    private Button ProjectActionButton(UiMessage label, GlyphKind kind, bool enabled, PackageChange change) =>
+        new Button { CommandData = change }
+                .Command(ProjectPackageCommand, CommandPresentationMode.None)
+                .Content(new GlyphElement().Kind(kind).GlyphSize(5).Width(16).Height(16))
+                .ToolTip(F(label))
+                .Width(32).Height(30).Padding(6)
+                .WithTheme((theme, button) =>
+                {
+                    var palette = AppTheme.From(theme);
+                    var color = change.Action switch
+                    {
+                        PackageAction.Install => palette.Success,
+                        PackageAction.Uninstall => palette.Error,
+                        _ => palette.Accent,
+                    };
+                    button.Foreground = color;
+                    button.Background = palette.ActionBackground(color);
+                    button.BorderBrush = color;
+                }, invokeImmediately: true)
+                .IsEnabled(enabled)
+                .CenterVertical()
+                .Margin(8, 0, 0, 0);
 
     private void AddField(string label, string? value)
     {
@@ -1009,6 +1044,7 @@ internal sealed class MainWindow : Window
             return;
         }
         _applying = true;
+        Render(_state);
         try
         {
             await ApplyCoreAsync(preview);
@@ -1016,16 +1052,22 @@ internal sealed class MainWindow : Window
         finally
         {
             _applying = false;
+            Render(_state);
         }
     }
 
     private async Task ApplyCoreAsync(Func<CancellationToken, Task<OperationPlan>> preview)
     {
         var plan = await preview(CancellationToken.None);
-        var confirmed = await OnUiAsync(() => Dialogs.ConfirmAsync(this, plan, _controller.State.Scope));
-        if (!confirmed)
+        if (_preferences.QuickMode && !plan.CanExecute)
         {
-            return;
+            throw UiErrors.InvalidOperation(UiMessage.Join(Environment.NewLine,
+                [new UiMessage(TextKey.OperationBlocked), .. plan.Blockers]));
+        }
+        if (PresentationModel.RequiresConfirmation(plan, _preferences))
+        {
+            var confirmed = await OnUiAsync(() => Dialogs.ConfirmAsync(this, plan, _controller.State.Scope));
+            if (!confirmed) return;
         }
         await RunBusyAsync(ct => _controller.ExecuteConfirmedAsync(plan, ct));
         var state = _controller.State;

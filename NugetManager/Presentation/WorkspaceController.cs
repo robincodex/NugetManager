@@ -663,11 +663,12 @@ internal sealed class WorkspaceController(
                 .OrderBy(o => o.Framework, StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var evaluation = evaluations.FirstOrDefault(e => PathUtil.AreEqual(e.Project.Path, project.Path));
-            var reference = evaluation?.References.FirstOrDefault(r => string.Equals(r.PackageId, packageId, StringComparison.OrdinalIgnoreCase));
+            var references = evaluation?.References.Where(r => string.Equals(r.PackageId, packageId, StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
 
-            if (occurrences.Any(o => o.Kind == ReferenceKind.Direct) || reference is not null)
+            if (occurrences.Any(o => o.Kind == ReferenceKind.Direct) || references.Count > 0)
             {
-                var blocked = reference is { IsWritable: false } ? reference.WriteBlockReason ?? M(TextKey.M214) : null;
+                var blocked = references.FirstOrDefault(r => !r.IsWritable) is { } reference
+                    ? reference.WriteBlockReason ?? M(TextKey.M214) : null;
                 rows.Add(new ProjectPackageState(project, occurrences, ProjectAction.Uninstall, blocked));
             }
             else if (occurrences.Count > 0 && occurrences.All(o => o.Kind == ReferenceKind.SdkImplicit))

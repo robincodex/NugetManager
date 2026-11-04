@@ -42,7 +42,12 @@ internal sealed record ProjectRowModel(
     ProjectAction Action,
     UiMessage? ActionLabel,
     bool ActionEnabled,
-    UiMessage? Note);
+    UiMessage? Note)
+{
+    public ProjectVersionAction? VersionChange { get; init; }
+}
+
+internal sealed record ProjectVersionAction(PackageAction Action, UiMessage Label, string Version, bool IsEnabled);
 
 internal sealed record ConfirmationModel(
     UiMessage Title,
@@ -116,14 +121,43 @@ internal static class PresentationModel
             };
             var enabled = label is not null && p.BlockReason is null && !state.IsBusy
                 && (p.Action != ProjectAction.Install || !string.IsNullOrEmpty(state.SelectedVersion));
-            return new ProjectRowModel(p.Project.Path, p.Project.Name, VersionText(p.Occurrences), p.Action, label, enabled, p.BlockReason);
+            return new ProjectRowModel(p.Project.Path, p.Project.Name, VersionText(p.Occurrences), p.Action, label, enabled, p.BlockReason)
+            {
+                VersionChange = BuildVersionAction(p, state),
+            };
         }).ToList();
+
+    private static ProjectVersionAction? BuildVersionAction(ProjectPackageState project, WorkspaceViewState state)
+    {
+        if (project.Action != ProjectAction.Uninstall || state.SelectedVersion is not { } target || !NuGetVersionComparer.TryParse(target, out _))
+            return null;
+        var versions = project.Occurrences.Where(o => o.Kind == ReferenceKind.Direct).Select(o => o.ResolvedVersion).ToList();
+        if (versions.Count == 0 || versions.Any(v => !NuGetVersionComparer.TryParse(v, out _)))
+            return null;
+        var comparisons = versions.Select(v => NuGetVersionComparer.Instance.Compare(target, v)).ToList();
+        var higher = comparisons.Any(c => c > 0);
+        var lower = comparisons.Any(c => c < 0);
+        if (!higher && !lower) return null;
+        var action = higher && lower ? PackageAction.SwitchVersion : higher ? PackageAction.Upgrade : PackageAction.Downgrade;
+        var key = action switch
+        {
+            PackageAction.Upgrade => TextKey.UpgradeToVersion,
+            PackageAction.Downgrade => TextKey.DowngradeToVersion,
+            _ => TextKey.SwitchToVersion,
+        };
+        return new(action, new UiMessage(key, target), target, project.BlockReason is null && !state.IsBusy);
+    }
+
+    public static bool RequiresConfirmation(OperationPlan plan, AppPreferences preferences) =>
+        !preferences.QuickMode || !plan.CanExecute;
 
     public static ConfirmationModel BuildConfirmation(OperationPlan plan, WorkspaceScope scope)
     {
         var changes = plan.Changes.Select(c => c.Action switch
         {
             PackageAction.Upgrade => MF(TextKey.M183, $"升级 {c.PackageId} 到 {c.Version}（{ProjectName(c.ProjectPath)}）"),
+            PackageAction.Downgrade => new UiMessage(TextKey.DowngradePackage, c.PackageId, c.Version!, ProjectName(c.ProjectPath)),
+            PackageAction.SwitchVersion => new UiMessage(TextKey.SwitchPackageVersion, c.PackageId, c.Version!, ProjectName(c.ProjectPath)),
             PackageAction.Install => MF(TextKey.M184, $"安装 {c.PackageId} {c.Version}（{ProjectName(c.ProjectPath)}）"),
             _ => MF(TextKey.M185, $"卸载 {c.PackageId}（{ProjectName(c.ProjectPath)}）"),
         }).ToList();
@@ -135,6 +169,8 @@ internal static class PresentationModel
             {
                 PackageAction.Upgrade => MF(TextKey.M187, $"确认升级 {plan.Changes.Select(c => c.PackageId).Distinct(StringComparer.OrdinalIgnoreCase).Count()} 个包"),
                 PackageAction.Install => M(TextKey.M188),
+                PackageAction.Downgrade => M(TextKey.ConfirmDowngrade),
+                PackageAction.SwitchVersion => M(TextKey.ConfirmSwitchVersion),
                 _ => M(TextKey.M189),
             }
             : M(TextKey.M190);

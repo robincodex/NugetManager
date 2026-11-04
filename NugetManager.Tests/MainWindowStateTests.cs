@@ -166,6 +166,86 @@ public class MainWindowStateTests
         Assert.Equal("条件引用", TestMessages.Zh(blocked[0].Note));
     }
 
+    [Theory]
+    [InlineData("1.0.0", "2.0.0", "Upgrade")]
+    [InlineData("2.0.0", "1.0.0", "Downgrade")]
+    [InlineData("1.0.0-beta.2", "1.0.0-beta.10", "Upgrade")]
+    [InlineData("1.0.0", "1.0.0-beta.10", "Downgrade")]
+    [InlineData("1.0", "1.0.0+build", null)]
+    [InlineData("1.0.0", "invalid", null)]
+    [InlineData("unknown", "2.0.0", null)]
+    [InlineData("1.0.0", null, null)]
+    public void SelectedVersionDeterminesExtraProjectAction(string installed, string? selected, string? expected)
+    {
+        var state = State(false) with
+        {
+            SelectedVersion = selected,
+            ProjectStates = [new(Api, [Occ(ApiPath, "Example.Json", installed, ReferenceKind.Direct)], ProjectAction.Uninstall, null)],
+        };
+        var row = Assert.Single(PresentationModel.BuildProjectRows(state));
+        Assert.Equal(ProjectAction.Uninstall, row.Action);
+        Assert.True(row.ActionEnabled);
+        Assert.Equal(expected, row.VersionChange?.Action.ToString());
+        if (expected is not null)
+        {
+            Assert.Equal(selected, row.VersionChange!.Version);
+            Assert.True(row.VersionChange.IsEnabled);
+        }
+    }
+
+    [Theory]
+    [InlineData("1.0.0", "2.0.0", "Upgrade")]
+    [InlineData("3.0.0", "2.0.0", "Downgrade")]
+    [InlineData("3.0.0", "3.0.0", "Upgrade")]
+    [InlineData("2.0.0", "2.0.0", null)]
+    [InlineData("3.0.0", "1.0.0", "Downgrade")]
+    [InlineData("3.0.0", "2.5.0", "SwitchVersion")]
+    public void MultiFrameworkVersionActionDoesNotMislabelMixedDirections(string first, string selected, string? expected)
+    {
+        var state = State(false) with
+        {
+            SelectedVersion = selected,
+            ProjectStates = [new(Api, [
+                Occ(ApiPath, "Example.Json", first, ReferenceKind.Direct),
+                Occ(ApiPath, "Example.Json", "2.0.0", ReferenceKind.Direct, "net8.0")], ProjectAction.Uninstall, null)],
+        };
+        Assert.Equal(expected, Assert.Single(PresentationModel.BuildProjectRows(state)).VersionChange?.Action.ToString());
+    }
+
+    [Fact]
+    public void VersionActionsRespectBusyProtectedAndIndirectReferences()
+    {
+        var state = State(false) with
+        {
+            SelectedVersion = "2.0.0",
+            ProjectStates = [
+                new(Api, [Occ(ApiPath, "Example.Json", "1.0.0", ReferenceKind.Direct)], ProjectAction.Uninstall, "protected"),
+                new(Core, [Occ(CorePath, "Example.Json", "1.0.0", ReferenceKind.Transitive)], ProjectAction.Install, null),
+                new(Core, [Occ(CorePath, "Example.Json", "1.0.0", ReferenceKind.SdkImplicit)], ProjectAction.None, "SDK"),
+            ],
+        };
+        var rows = PresentationModel.BuildProjectRows(state);
+        Assert.False(rows[0].VersionChange!.IsEnabled);
+        Assert.Null(rows[1].VersionChange);
+        Assert.Null(rows[2].VersionChange);
+        var busy = PresentationModel.BuildProjectRows(state with { IsBusy = true });
+        Assert.All(busy, row => Assert.False(row.ActionEnabled));
+        Assert.False(busy[0].VersionChange!.IsEnabled);
+    }
+
+    [Fact]
+    public void QuickModeOnlySkipsConfirmationForExecutablePlans()
+    {
+        var plan = new OperationPlan([], [], [], ["warning"], [])
+        {
+            Commands = [new(PackageAction.Upgrade, ApiPath, "Example", "2.0.0", "")],
+        };
+        Assert.True(PresentationModel.RequiresConfirmation(plan, new()));
+        Assert.False(PresentationModel.RequiresConfirmation(plan, new(QuickMode: true)));
+        Assert.True(PresentationModel.RequiresConfirmation(plan with { Blockers = ["blocked"] }, new(QuickMode: true)));
+        Assert.True(PresentationModel.RequiresConfirmation(plan with { Commands = [] }, new(QuickMode: true)));
+    }
+
     [Fact]
     public void ConfirmationListsOutsideScopeAffectedProjects()
     {
