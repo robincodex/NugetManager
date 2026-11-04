@@ -371,6 +371,7 @@ internal sealed class MainWindow : Window
                     new StackPanel().Horizontal().Spacing(8).Column(2).Children(
                         _statusRing.Width(20).Height(20).CenterVertical().IsActive(false).IsVisible(false),
                         _cancelButton)));
+        _surfaces.Add((statusBar, () => HeaderRowColor));
 
         _projectList.OnSelectionChanged(_ =>
         {

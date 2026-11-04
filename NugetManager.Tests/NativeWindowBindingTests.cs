@@ -75,6 +75,8 @@ public class NativeWindowBindingTests
                 Assert.Equal(40, state.Search!.NextSkip);
                 Assert.Equal(["Checked"], state.SelectedPackageIds);
                 Assert.Equal(AppLocalization.Template(TextKey.AppTitle, language), window.Title);
+                var statusBar = Assert.IsType<Border>(Field<TextBlock>(window, "_statusText").Parent!.Parent);
+                Assert.Equal(AppTheme.Current.Header, statusBar.Background);
             }
         }
         Set(window, "_browseMode", false);
