@@ -3,9 +3,11 @@ using Aprillz.MewUI;
 namespace NugetManager.Presentation;
 
 internal sealed record AppTheme(Color Pane, Color Row, Color Header, Color Border, Color Selected,
-    Color Text, Color Muted, Color Accent, Color Warning, Color Error)
+    Color Text, Color Muted, Color Accent, Color Warning, Color Error, Color Success)
 {
     public static AppTheme Current => From(Application.Current.Theme);
+
+    public Color ActionBackground(Color color) => Mix(Row, color, .16);
 
     public static AppTheme From(Theme theme)
     {
@@ -13,7 +15,8 @@ internal sealed record AppTheme(Color Pane, Color Row, Color Header, Color Borde
         var selected = Mix(p.ControlBackground, p.WindowText, .12);
         return new(p.WindowBackground, p.ControlBackground, p.ContainerBackground, p.ControlBorder, selected,
             p.WindowText, Mix(p.WindowBackground, p.WindowText, .75), p.Accent,
-            theme.IsDark ? Color.FromRgb(255, 195, 91) : Color.FromRgb(133, 77, 0), p.Error);
+            theme.IsDark ? Color.FromRgb(255, 195, 91) : Color.FromRgb(133, 77, 0), p.Error,
+            theme.IsDark ? Color.FromRgb(105, 219, 148) : Color.FromRgb(22, 112, 58));
     }
 
     private static Color Mix(Color background, Color foreground, double amount) => Color.FromRgb(

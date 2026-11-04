@@ -368,7 +368,7 @@ internal sealed class MainWindow : Window
                 .Columns("Auto,*,Auto")
                 .Children(
                     _statusText.CenterVertical(),
-                    new StackPanel().Vertical().Column(1).Margin(16, 0).Children(_progressText, _errorText),
+                    new StackPanel().Vertical().Column(1).CenterVertical().Margin(16, 0).Children(_progressText, _errorText),
                     new StackPanel().Horizontal().Spacing(8).Column(2).Children(
                         _statusRing.Width(20).Height(20).CenterVertical().IsActive(false).IsVisible(false),
                         _cancelButton)));
@@ -873,6 +873,14 @@ internal sealed class MainWindow : Window
         {
             grid.Add(new Button()
                 .Content(F(label))
+                .WithTheme((theme, button) =>
+                {
+                    var palette = AppTheme.From(theme);
+                    var color = row.Action == ProjectAction.Install ? palette.Success : palette.Error;
+                    button.Foreground = color;
+                    button.Background = palette.ActionBackground(color);
+                    button.BorderBrush = color;
+                }, invokeImmediately: true)
                 .IsEnabled(row.ActionEnabled)
                 .Column(1)
                 .CenterVertical()
