@@ -1,6 +1,9 @@
 using NugetManager.Domain;
 using NugetManager.Operations;
 using NugetManager.Presentation;
+using NugetManager.Packages;
+using Aprillz.MewUI.Controls;
+using System.Reflection;
 
 namespace NugetManager.Tests;
 
@@ -31,6 +34,51 @@ public class MainWindowStateTests
         Implicit = [Occ(ApiPath, "Example.Core", "1.0.0", ReferenceKind.Transitive)],
         SdkImplicit = [Occ(CorePath, "Microsoft.NET.ILLink.Tasks", "10.0.0", ReferenceKind.SdkImplicit)],
     };
+
+    [Fact]
+    public void RebuildingLoadingRowDoesNotLeaveRingInDetachedParent()
+    {
+        var build = typeof(MainWindow).GetMethod("LoadingLine", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var ring = new ProgressRing();
+        try
+        {
+            var first = (StackPanel)build.Invoke(null, [ring, "search"])!;
+            ring.IsActive = false;
+            var second = (StackPanel)build.Invoke(null, [ring, "search"])!;
+            Assert.DoesNotContain(ring, first.Children);
+            Assert.Same(second, ring.Parent);
+            Assert.True(ring.IsActive);
+        }
+        finally { ring.IsActive = false; }
+    }
+
+    [Fact]
+    public void LoadingSlotsHaveIndependentLifetimesAndRespectVisibleMode()
+    {
+        var state = State(false) with { IsBusy = true, SearchLoading = true, DetailsLoading = true, SelectedPackageId = "Example.Json" };
+        var activity = PresentationModel.BuildActivity(state, true);
+        Assert.True(activity.Workspace);
+        Assert.True(activity.Search);
+        Assert.True(activity.Details);
+        Assert.True(activity.Versions);
+        Assert.False(activity.SourceSelection);
+        var ready = PresentationModel.BuildActivity(state with { IsBusy = false }, true);
+        Assert.True(ready.SourceSelection);
+        Assert.True(ready.Search);
+        var installed = PresentationModel.BuildActivity(state with { IsBusy = false }, false);
+        Assert.False(installed.SourceSelection);
+        Assert.False(installed.Search);
+        Assert.True(installed.Details);
+    }
+
+    [Fact]
+    public void BrowseGroupTitlesDistinguishPopularityAndShowActualCounts()
+    {
+        var source = new NuGetSource("local", @"C:\feed", true, false);
+        var page = new SearchPage([new SearchHit("A", "1.0.0", "local", null)], 0, 10, false, []);
+        Assert.Equal("local · 普通浏览（1）", PresentationModel.BrowseGroupTitle(new(source, BrowseKind.Ordinary, page)));
+        Assert.Equal("local · 热门（1）", PresentationModel.BrowseGroupTitle(new(source, BrowseKind.Popular, page)));
+    }
 
     [Fact]
     public void ExtractedPresentationStateUsesInstalledLabels()

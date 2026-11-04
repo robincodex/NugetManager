@@ -40,6 +40,12 @@ internal sealed class MainWindow : Window
     private readonly TextBlock _statusText = new();
     private readonly TextBlock _progressText = new();
     private readonly TextBlock _errorText = new();
+    private readonly ComboBox _sourcePicker = new();
+    private readonly ProgressRing _statusRing = new();
+    private readonly ProgressRing _searchRing = new();
+    private readonly ProgressRing _detailsRing = new();
+    private readonly ProgressRing _versionsRing = new();
+    private object? _sourcesKey;
 
     private bool _browseMode;
     private bool _suppressEvents;
@@ -82,6 +88,10 @@ internal sealed class MainWindow : Window
             _busyCts?.Cancel();
             _searchCts?.Cancel();
             _detailsCts?.Cancel();
+            _statusRing.IsActive = false;
+            _searchRing.IsActive = false;
+            _detailsRing.IsActive = false;
+            _versionsRing.IsActive = false;
         });
     }
 
@@ -184,7 +194,9 @@ internal sealed class MainWindow : Window
                 .Children(
                     _statusText.CenterVertical(),
                     new StackPanel().Vertical().Column(1).Margin(16, 0).Children(_progressText, _errorText),
-                    _cancelButton.Column(2)));
+                    new StackPanel().Horizontal().Spacing(8).Column(2).Children(
+                        _statusRing.Width(20).Height(20).CenterVertical().IsActive(false).IsVisible(false),
+                        _cancelButton)));
 
         _projectList.OnSelectionChanged(_ =>
         {
@@ -210,10 +222,24 @@ internal sealed class MainWindow : Window
 
         _installedTab.Content("已安装").OnClick(() => SetBrowseMode(false));
         _browseTab.Content("浏览").OnClick(() => SetBrowseMode(true));
-        _searchBox.Placeholder("搜索 NuGet 包（使用工作区配置的包源）").IsVisible(false).OnTextChanged(_ => ScheduleSearch());
+        _searchBox.Placeholder("搜索所选源中的 NuGet 包").IsVisible(false).OnTextChanged(_ => ScheduleSearch());
+        _sourcePicker.Width(210).OnSelectionChanged(_ =>
+        {
+            if (_suppressEvents || !_browseMode || _state.Workspace is null) return;
+            var index = _sourcePicker.SelectedIndex;
+            var source = index > 0 && index <= _state.Sources.Count ? _state.Sources[index - 1].Name : null;
+            if (string.Equals(source, _state.SelectedSourceName, StringComparison.OrdinalIgnoreCase)) return;
+            _searchCts?.Cancel();
+            _detailsCts?.Cancel();
+            var query = _searchBox.Text?.Trim() ?? "";
+            Fire(() => _controller.SelectSourceAsync(source, CancellationToken.None, query));
+        });
         var middle = new DockPanel().Children(
             new StackPanel().Vertical().Spacing(6).Margin(8, 8, 8, 4).DockTop().Children(
-                new StackPanel().Horizontal().Spacing(4).Children(_installedTab, _browseTab),
+                new Grid().Columns("*,Auto").Children(
+                    new StackPanel().Horizontal().Spacing(4).Children(_installedTab, _browseTab),
+                    new StackPanel().Horizontal().Spacing(6).Column(1).Children(
+                        Muted("包源").CenterVertical(), _sourcePicker)),
                 _searchBox),
             new ScrollViewer().VerticalScroll(ScrollMode.Auto).Content(_middle.Margin(8, 0, 8, 8)));
 
@@ -291,6 +317,18 @@ internal sealed class MainWindow : Window
         _installedTab.IsEnabled = _browseMode;
         _browseTab.IsEnabled = !_browseMode && state.Workspace is not null;
         _searchBox.IsVisible = _browseMode;
+        var activity = PresentationModel.BuildActivity(state, _browseMode);
+        _statusRing.IsActive = activity.Workspace;
+        _statusRing.IsVisible = activity.Workspace;
+        _sourcePicker.IsEnabled = activity.SourceSelection;
+        if (!Equals(_sourcesKey, state.Sources))
+        {
+            _sourcesKey = state.Sources;
+            _sourcePicker.Items(new[] { "全部源" }.Concat(state.Sources.Select(s => s.Name)).ToArray());
+        }
+        var sourceIndex = state.SelectedSourceName is null ? 0
+            : state.Sources.ToList().FindIndex(s => string.Equals(s.Name, state.SelectedSourceName, StringComparison.OrdinalIgnoreCase)) + 1;
+        if (_sourcePicker.SelectedIndex != sourceIndex) _sourcePicker.SelectedIndex = sourceIndex;
     }
 
     private void RenderProjects(WorkspaceViewState state)
@@ -329,7 +367,8 @@ internal sealed class MainWindow : Window
     private void RenderMiddle(WorkspaceViewState state)
     {
         var key = _browseMode
-            ? (object)(true, state.Workspace, state.Search, state.SearchLoading, state.SearchError, state.SelectedPackageId, state.SearchQuery)
+            ? (object)(true, state.Workspace, state.Search, state.Browse, state.SearchLoading, state.SearchError,
+                state.SelectedPackageId, state.SelectedPackageSourceName, state.SearchQuery, state.Installed)
             : (false, state.Workspace, state.Upgrades, state.Installed, state.Implicit, state.SdkImplicit, state.SelectedPackageIds,
                 state.SelectedPackageId, state.IsBusy, state.UpdatesComplete, state.Diagnostics, state.Status);
         if (Equals(key, _middleKey))
@@ -337,6 +376,7 @@ internal sealed class MainWindow : Window
             return;
         }
         _middleKey = key;
+        _searchRing.IsActive = false;
         _middle.Clear();
 
         if (state.Workspace is null)
@@ -364,9 +404,8 @@ internal sealed class MainWindow : Window
         }
         foreach (var diagnostic in state.Diagnostics.Take(5))
         {
-            _middle.Add(Wrapped($"⚠ {(string.IsNullOrEmpty(diagnostic.SourceName) ? "" : diagnostic.SourceName + "：")}{FirstLine(diagnostic.Message)}")
-                .Foreground(OperationDialog.WarningColor).FontSize(ThemeFontSize.Small).Margin(4, 0, 4, 4)
-                .ToolTip(diagnostic.Message));
+            _middle.Add(WarningLine($"{(string.IsNullOrEmpty(diagnostic.SourceName) ? "" : diagnostic.SourceName + "：")}{FirstLine(diagnostic.Message)}")
+                .Margin(4, 0, 4, 4).ToolTip(diagnostic.Message));
         }
         if (model.Groups.Count == 0)
         {
@@ -445,12 +484,15 @@ internal sealed class MainWindow : Window
         grid.Add(new StackPanel().Vertical().Column(1).Children(
             new TextBlock().Text(row.PackageId).SemiBold().TextTrimming(TextTrimming.CharacterEllipsis),
             Muted(row.ProjectsText).FontSize(ThemeFontSize.Small)));
-        var version = new TextBlock().Text(row.VersionText).Column(2).CenterVertical().Margin(8, 0, 0, 0);
         if (row.Group == PackageGroupKind.Upgrades)
         {
-            version.Foreground(AccentColor);
+            var upgrade = state.Upgrades.First(u => string.Equals(u.PackageId, row.PackageId, StringComparison.OrdinalIgnoreCase));
+            grid.Add(new StackPanel().Horizontal().Spacing(6).Column(2).CenterVertical().Margin(8, 0, 0, 0).Children(
+                new TextBlock().Text(string.Join(", ", upgrade.FromVersions)).Foreground(AccentColor),
+                new GlyphElement().Kind(GlyphKind.ChevronRight).GlyphSize(4).Foreground(AccentColor).CenterVertical(),
+                new TextBlock().Text(upgrade.ToVersion).Foreground(AccentColor)));
         }
-        grid.Add(version);
+        else grid.Add(new TextBlock().Text(row.VersionText).Column(2).CenterVertical().Margin(8, 0, 0, 0));
 
         var selected = string.Equals(state.SelectedPackageId, row.PackageId, StringComparison.OrdinalIgnoreCase);
         return new Border()
@@ -464,44 +506,30 @@ internal sealed class MainWindow : Window
 
     private void RenderSearch(WorkspaceViewState state)
     {
-        if (string.IsNullOrWhiteSpace(state.SearchQuery) && state.Search is null)
-        {
-            _middle.Add(Muted("输入关键字搜索包。").Margin(4, 8, 4, 0));
-            return;
-        }
         if (state.SearchError is { } error)
         {
             _middle.Add(Wrapped("搜索失败：" + FirstLine(error)).Foreground(OperationDialog.ErrorColor).ToolTip(error).Margin(4, 8, 4, 0));
+            _middle.Add(new Button().Content("重试").OnClick(() => Fire(() => _controller.SearchAsync(state.SearchQuery, 0, CancellationToken.None))));
+        }
+        if (state.Browse is { } browse)
+        {
+            if (browse.Sources.Count == 0) _middle.Add(Muted("工作区没有启用的包源。").Margin(4, 8, 4, 0));
+            foreach (var group in browse.Sources)
+            {
+                _middle.Add(new Border().Background(HeaderRowColor).Padding(8, 8).Margin(0, 8, 0, 0)
+                    .Child(new TextBlock().Text(PresentationModel.BrowseGroupTitle(group)).SemiBold()));
+                RenderSearchItems(group.Page, state);
+                if (group.Page.Diagnostics.Count > 0)
+                {
+                    _middle.Add(new Button().Content(state.SelectedSourceName is null ? "重新加载全部包源" : "重试包源")
+                        .Margin(0, 6, 0, 0).IsEnabled(!state.SearchLoading && !state.IsBusy)
+                        .OnClick(() => Fire(() => _controller.LoadBrowseAsync(true, CancellationToken.None))));
+                }
+            }
         }
         if (state.Search is { } page)
         {
-            foreach (var diagnostic in page.Diagnostics)
-            {
-                _middle.Add(Wrapped($"⚠ {diagnostic.SourceName}：{FirstLine(diagnostic.Message)}")
-                    .Foreground(OperationDialog.WarningColor).FontSize(ThemeFontSize.Small).Margin(4, 0, 4, 4));
-            }
-            if (page.Items.Count == 0 && !state.SearchLoading)
-            {
-                _middle.Add(Muted(page.Diagnostics.Count > 0 ? "没有结果（部分包源查询失败）。" : "没有找到匹配的包。").Margin(4, 8, 4, 0));
-            }
-            foreach (var hit in page.Items)
-            {
-                var selected = string.Equals(state.SelectedPackageId, hit.PackageId, StringComparison.OrdinalIgnoreCase);
-                var installed = state.Installed.Any(o => string.Equals(o.PackageId, hit.PackageId, StringComparison.OrdinalIgnoreCase));
-                _middle.Add(new Border()
-                    .Background(selected ? SelectedRowColor : Color.White)
-                    .BorderBrush(BorderColor)
-                    .BorderThickness(new Thickness(0, 0, 0, 1))
-                    .Padding(8, 6)
-                    .OnMouseDown(_ => SelectPackage(hit.PackageId, hit.Version, hit.SourceName))
-                    .Child(new Grid().Columns("*,Auto").Children(
-                        new StackPanel().Vertical().Children(
-                            new TextBlock().Text(installed ? $"{hit.PackageId}（已安装）" : hit.PackageId).SemiBold(),
-                            Muted(FirstLine(hit.Description ?? "未提供简介")).FontSize(ThemeFontSize.Small).TextTrimming(TextTrimming.CharacterEllipsis)),
-                        new StackPanel().Vertical().Column(1).Margin(8, 0, 0, 0).Children(
-                            new TextBlock().Text(hit.Version),
-                            Muted(hit.SourceName).FontSize(ThemeFontSize.Small)))));
-            }
+            RenderSearchItems(page, state);
             if (page.HasMore && !state.SearchLoading)
             {
                 _middle.Add(new Button().Content("加载更多").Margin(0, 8, 0, 0)
@@ -510,19 +538,53 @@ internal sealed class MainWindow : Window
         }
         if (state.SearchLoading)
         {
-            _middle.Add(Muted("正在搜索…").Margin(4, 8, 4, 0));
+            _middle.Add(LoadingLine(_searchRing, string.IsNullOrWhiteSpace(state.SearchQuery) ? "正在加载包源…" : "正在搜索…")
+                .Margin(4, 8, 4, 0));
         }
     }
 
+    private void RenderSearchItems(SearchPage page, WorkspaceViewState state)
+    {
+        foreach (var diagnostic in page.Diagnostics)
+            _middle.Add(WarningLine($"{diagnostic.SourceName}：{FirstLine(diagnostic.Message)}").Margin(4, 0, 4, 4).ToolTip(diagnostic.Message));
+        if (page.Items.Count == 0 && !state.SearchLoading)
+            _middle.Add(Muted(page.Diagnostics.Count > 0 ? "没有结果（包源查询失败）。" : "没有找到匹配的包。").Margin(4, 8, 4, 0));
+        foreach (var hit in page.Items)
+        {
+            var selected = string.Equals(state.SelectedPackageId, hit.PackageId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(state.SelectedPackageSourceName, hit.SourceName, StringComparison.OrdinalIgnoreCase);
+            var installed = state.Installed.Any(o => string.Equals(o.PackageId, hit.PackageId, StringComparison.OrdinalIgnoreCase));
+            _middle.Add(new Border().Background(selected ? SelectedRowColor : Color.White).BorderBrush(BorderColor)
+                .BorderThickness(new Thickness(0, 0, 0, 1)).Padding(8, 6)
+                .OnMouseDown(_ => SelectPackage(hit.PackageId, hit.Version, hit.SourceName))
+                .Child(new Grid().Columns("*,Auto").Children(
+                    new StackPanel().Vertical().Children(
+                        new TextBlock().Text(installed ? $"{hit.PackageId}（已安装）" : hit.PackageId).SemiBold(),
+                        Muted(FirstLine(hit.Description ?? "未提供简介")).FontSize(ThemeFontSize.Small).TextTrimming(TextTrimming.CharacterEllipsis)),
+                    new StackPanel().Vertical().Column(1).Margin(8, 0, 0, 0).Children(
+                        new TextBlock().Text(hit.Version), Muted(hit.SourceName).FontSize(ThemeFontSize.Small)))));
+        }
+    }
+
+    private static FrameworkElement LoadingLine(ProgressRing ring, string message) =>
+        new StackPanel().Horizontal().Spacing(8).Children(ring.Width(18).Height(18).IsActive(true).CenterVertical(), Muted(message).CenterVertical());
+
+    private static FrameworkElement WarningLine(string message) =>
+        new Grid().Columns("Auto,*").Children(
+            new PromptIcon { Kind = PromptIconKind.Warning }.Width(16).Height(16).Margin(0, 2, 6, 0).Top(),
+            Wrapped(message).Column(1).Foreground(OperationDialog.WarningColor).FontSize(ThemeFontSize.Small));
+
     private void RenderDetails(WorkspaceViewState state)
     {
-        var key = (state.SelectedPackageId, state.SelectedVersion, state.Versions, state.Details, state.DetailsLoading, state.DetailsError,
+        var key = (state.SelectedPackageId, state.SelectedPackageSourceName, state.SelectedVersion, state.Versions, state.Details, state.DetailsLoading, state.DetailsError,
             state.ProjectStates, state.IsBusy);
         if (Equals(key, _detailsKey))
         {
             return;
         }
         _detailsKey = key;
+        _versionsRing.IsActive = false;
+        _detailsRing.IsActive = false;
         _details.Clear();
 
         if (state.SelectedPackageId is not { } packageId)
@@ -543,18 +605,18 @@ internal sealed class MainWindow : Window
         {
             if (!_suppressEvents && combo.SelectedIndex >= 0 && combo.SelectedIndex < versions.Count)
             {
-                SelectPackage(packageId, versions[combo.SelectedIndex], state.Versions?.SourceName);
+                SelectPackage(packageId, versions[combo.SelectedIndex], state.SelectedPackageSourceName ?? state.Versions?.SourceName);
             }
         });
-        _details.Add(new StackPanel().Horizontal().Spacing(8).Children(
-            new TextBlock().Text("版本").CenterVertical(),
-            combo,
-            Muted(state.Versions is null ? "正在读取版本…" : "").CenterVertical()));
+        var versionRow = new StackPanel().Horizontal().Spacing(8).Children(new TextBlock().Text("版本").CenterVertical(), combo);
+        if (PresentationModel.BuildActivity(state, _browseMode).Versions)
+            versionRow.Add(LoadingLine(_versionsRing, "正在读取版本…"));
+        _details.Add(versionRow);
         if (state.Versions?.Diagnostics is { Count: > 0 } versionDiagnostics)
         {
             foreach (var diagnostic in versionDiagnostics)
             {
-                _details.Add(Wrapped("⚠ " + FirstLine(diagnostic.Message)).Foreground(OperationDialog.WarningColor).FontSize(ThemeFontSize.Small));
+                _details.Add(WarningLine(FirstLine(diagnostic.Message)));
             }
         }
 
@@ -565,9 +627,9 @@ internal sealed class MainWindow : Window
         }
 
         _details.Add(SectionTitle("包信息"));
-        if (state.DetailsLoading)
+        if (PresentationModel.BuildActivity(state, _browseMode).Details)
         {
-            _details.Add(Muted("正在读取包信息…"));
+            _details.Add(LoadingLine(_detailsRing, "正在读取包信息…"));
         }
         else if (state.DetailsError is { } detailsError)
         {
@@ -603,7 +665,7 @@ internal sealed class MainWindow : Window
             }
             foreach (var diagnostic in details.Diagnostics)
             {
-                _details.Add(Wrapped($"⚠ {diagnostic.SourceName}：{diagnostic.Message}").Foreground(OperationDialog.WarningColor).FontSize(ThemeFontSize.Small));
+                _details.Add(WarningLine($"{diagnostic.SourceName}：{diagnostic.Message}"));
             }
         }
     }
@@ -658,6 +720,8 @@ internal sealed class MainWindow : Window
         if (browse)
         {
             _searchBox.Focus();
+            if (_state.Workspace is not null)
+                Fire(() => _controller.SearchAsync(_searchBox.Text?.Trim() ?? "", 0, CancellationToken.None));
         }
     }
 
@@ -710,7 +774,12 @@ internal sealed class MainWindow : Window
             return MessageBox.NotifyAsync("目录不存在", PromptIconKind.Error, directory, this);
         }
         _detailsKey = null;
-        return RunBusyAsync(ct => _controller.OpenAsync(directory, solutionPath, ct));
+        return RunBusyAsync(async ct =>
+        {
+            await _controller.OpenAsync(directory, solutionPath, ct);
+            if (_browseMode && _controller.State.Workspace is not null)
+                await _controller.SearchAsync("", 0, ct);
+        });
     }
 
     private async Task RunBusyAsync(Func<CancellationToken, Task> work)

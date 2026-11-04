@@ -51,9 +51,18 @@ internal sealed record ConfirmationModel(
     IReadOnlyList<string> Blockers,
     bool CanConfirm);
 
+internal sealed record ActivityModel(bool Workspace, bool Search, bool Details, bool Versions, bool SourceSelection);
+
 /// <summary>Pure projections from controller state to what the window shows; kept free of MewUI so they are unit-testable.</summary>
 internal static class PresentationModel
 {
+    public static ActivityModel BuildActivity(WorkspaceViewState state, bool browseMode) =>
+        new(state.IsBusy, browseMode && state.SearchLoading, state.SelectedPackageId is not null && state.DetailsLoading,
+            state.SelectedPackageId is not null && state.Versions is null, browseMode && state.Workspace is not null && !state.IsBusy);
+
+    public static string BrowseGroupTitle(BrowseSourcePage group) =>
+        $"{group.Source.Name} · {(group.Kind == BrowseKind.Popular ? "热门" : "普通浏览")}（{group.Page.Items.Count}）";
+
     public static PackageListModel BuildPackageList(WorkspaceViewState state)
     {
         var groups = new List<PackageGroupModel>();

@@ -114,7 +114,7 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
                 hits.Add(new SearchHit(package.Id, package.LatestVersion ?? package.Version ?? "", name, package.Description));
             }
         }
-        return new SearchPage(hits, skip, take, hasMore, ToDiagnostics(output));
+        return new SearchPage(hits, skip, take, hasMore, ToDiagnostics(output).Concat(UnavailableLocalSources(workspace, sourceName)).ToList());
     }
 
     public async Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct, string? sourceName = null)
@@ -142,7 +142,8 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
             }
         }
         versions.Sort((a, b) => NuGetVersionComparer.Instance.Compare(b, a));
-        return new PackageVersions(packageId, versions, ToDiagnostics(output)) { SourceName = resultSourceName };
+        return new PackageVersions(packageId, versions, ToDiagnostics(output).Concat(UnavailableLocalSources(workspace, sourceName)).ToList())
+            { SourceName = resultSourceName };
     }
 
     public async Task<BrowsePage> BrowseAsync(Workspace workspace, string? sourceName, bool includePrerelease, CancellationToken ct)
@@ -184,4 +185,10 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
 
     private static List<SourceDiagnostic> ToDiagnostics(SearchOutput output) =>
         (output.Problems ?? []).Select(p => new SourceDiagnostic("", p.ProblemType ?? "SourceError", p.Text ?? "包源查询失败。")).ToList();
+
+    private static IEnumerable<SourceDiagnostic> UnavailableLocalSources(Workspace workspace, string? sourceName) =>
+        NuGetConfigReader.Load(workspace.Directory).Sources
+            .Where(s => s.IsEnabled && (sourceName is null || string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase))
+                && !s.IsHttp && !Directory.Exists(s.Location))
+            .Select(s => new SourceDiagnostic(s.Name, "SourceUnavailable", $"本地包源目录不存在或无法访问：{s.Location}"));
 }

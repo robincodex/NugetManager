@@ -15,6 +15,40 @@ public class SourceControllerTests
     ]);
 
     [Fact]
+    public async Task RefreshingBrowseKeepsExistingGroupsVisibleUntilReplacementArrives()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        var replacement = new TaskCompletionSource<BrowsePage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var original = Page("local", "Existing");
+        var catalog = new FakeCatalog { Browse = (_, _) => ++calls == 1 ? Task.FromResult(original) : replacement.Task };
+        var controller = Controller(ws, catalog);
+        await controller.OpenAsync(ws.Root, null, CancellationToken.None);
+        await controller.LoadBrowseAsync(false, CancellationToken.None);
+        var refresh = controller.LoadBrowseAsync(true, CancellationToken.None);
+        try
+        {
+            Assert.True(controller.State.SearchLoading);
+            Assert.Same(original, controller.State.Browse);
+        }
+        finally { replacement.SetResult(Page("local", "Replacement")); await refresh; }
+        Assert.Equal("Replacement", controller.State.Browse!.Sources[0].Page.Items[0].PackageId);
+    }
+
+    [Fact]
+    public async Task ChangingSourceUsesPendingTextRatherThanLastDebouncedQuery()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        var controller = Controller(ws, new FakeCatalog());
+        await controller.OpenAsync(ws.Root, null, CancellationToken.None);
+        await controller.SearchAsync("previous", 0, CancellationToken.None);
+        await controller.SelectSourceAsync("local", CancellationToken.None, "");
+        Assert.Equal("", controller.State.SearchQuery);
+        Assert.NotNull(controller.State.Browse);
+        Assert.Null(controller.State.Search);
+    }
+
+    [Fact]
     public async Task FirstBrowseLoadsAllSourcesAndSingleSourceReloadsThirty()
     {
         await using var ws = await TestWorkspace.CreateAsync();

@@ -331,7 +331,7 @@ internal sealed class WorkspaceController(
         }
     }
 
-    public async Task SelectSourceAsync(string? sourceName, CancellationToken ct)
+    public async Task SelectSourceAsync(string? sourceName, CancellationToken ct, string? query = null)
     {
         EnsureNotWriting();
         if (sourceName is not null && !State.Sources.Any(s => string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase)))
@@ -341,7 +341,7 @@ internal sealed class WorkspaceController(
         Interlocked.Increment(ref _searchGeneration);
         Interlocked.Increment(ref _detailsGeneration);
         Interlocked.Increment(ref _versionsGeneration);
-        Publish(s => Compose(s with { SelectedSourceName = sourceName, Search = null, Browse = null, SearchError = null,
+        Publish(s => Compose(s with { SelectedSourceName = sourceName, SearchQuery = query ?? s.SearchQuery, Search = null, Browse = null, SearchError = null,
             SelectedPackageId = null, SelectedPackageSourceName = null, Versions = null, Details = null, DetailsLoading = false }));
         await SearchAsync(State.SearchQuery, 0, ct).ConfigureAwait(false);
     }
@@ -359,7 +359,8 @@ internal sealed class WorkspaceController(
             if (refresh) _browseCache.Remove(key);
             _browseCache.TryGetValue(key, out cached);
         }
-        Publish(s => s with { SearchQuery = "", Search = null, Browse = cached, SearchLoading = cached is null, SearchError = null });
+        Publish(s => s with { SearchQuery = "", Search = null, Browse = cached ?? (refresh ? s.Browse : null),
+            SearchLoading = cached is null, SearchError = null });
         if (cached is not null) return;
         try
         {

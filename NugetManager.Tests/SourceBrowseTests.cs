@@ -63,6 +63,22 @@ public class SourceBrowseTests
     }
 
     [Fact]
+    public async Task MissingLocalFeedIsReportedInsteadOfLookingLikeAnEmptySource()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        ws.AddPackage("Existing", "1.0.0");
+        ws.WriteNuGetConfig($"""<add key="missing" value="{ws.Path_("missing")}" />""");
+        var catalog = new PackageCatalog(ws.CreateSdk());
+        var page = await catalog.BrowseAsync(WorkspaceOf(ws), null, false, CancellationToken.None);
+        Assert.Single(page.Sources.Single(g => g.Source.Name == "local").Page.Items);
+        Assert.Contains(page.Sources.Single(g => g.Source.Name == "missing").Page.Diagnostics, d => d.SourceName == "missing");
+        var search = await catalog.SearchAsync(WorkspaceOf(ws), "Existing", 0, 20, false, CancellationToken.None);
+        Assert.Contains(search.Diagnostics, d => d.SourceName == "missing");
+        var versions = await catalog.GetVersionsAsync(WorkspaceOf(ws), "Existing", false, CancellationToken.None, "missing");
+        Assert.Contains(versions.Diagnostics, d => d.SourceName == "missing");
+    }
+
+    [Fact]
     public async Task FailedSourceDoesNotHideSuccessfulSource()
     {
         await using var ws = await TwoFeedsAsync();
