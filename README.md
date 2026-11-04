@@ -1,6 +1,6 @@
 # NuGet Package Manager
 
-[简体中文](README-zh.md)
+[简体中文](README_zh.md)
 
 A Windows desktop NuGet package manager built with .NET 10, Native AOT, and [Aprillz.MewUI](https://www.nuget.org/packages/Aprillz.MewUI).
 

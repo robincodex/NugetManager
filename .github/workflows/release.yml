@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - NugetManager/NugetManager.csproj
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Read project version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content -Raw 'NugetManager\NugetManager.csproj'
+          $versions = @($project.SelectNodes('/Project/PropertyGroup/Version') | ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ })
+          if ($versions.Count -ne 1) {
+            throw "Expected exactly one non-empty Version property in NugetManager\NugetManager.csproj."
+          }
+
+          $version = $versions[0]
+          if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {
+            throw "Version '$version' cannot be used in a Git tag."
+          }
+
+          "value=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Skip if release already exists
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+
+          try {
+            Invoke-RestMethod -Uri $uri -Headers $headers -Method Get | Out-Null
+            "exists=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release $tag already exists; skipping."
+          }
+          catch {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+            if ($statusCode -eq 404) {
+              "exists=false" >> $env:GITHUB_OUTPUT
+            }
+            else {
+              throw
+            }
+          }
+
+      - name: Set up .NET
+        if: steps.release.outputs.exists == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build Native AOT application
+        if: steps.release.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          .\build_aot.ps1
+          if (-not (Test-Path 'out\nugetmgr.exe' -PathType Leaf)) {
+            throw 'Build did not produce out\nugetmgr.exe.'
+          }
+
+      - name: Create GitHub Release
+        if: steps.release.outputs.exists == 'false'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          gh release create $tag 'out\nugetmgr.exe' --title $tag --generate-notes --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create release $tag."
+          }
