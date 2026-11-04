@@ -1,4 +1,6 @@
 using Aprillz.MewUI;
+using System.Globalization;
+using System.Text.Json;
 using NugetManager.Operations;
 using NugetManager.Packages;
 using NugetManager.Presentation;
@@ -12,6 +14,16 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        var preferenceStore = new AppPreferenceStore(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NugetManager", "preferences.json"));
+        AppPreferences preferences;
+        try { preferences = preferenceStore.LoadAsync(CancellationToken.None).GetAwaiter().GetResult(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            preferences = new();
+            NativeMessageBox.Show(AppLocalization.Format(new UiMessage(TextKey.PreferencesReadFailed, ex.Message),
+                preferences.Language, CultureInfo.CurrentUICulture), "NuGet", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Warning);
+        }
         string? directory = null;
         if (args.Length > 1)
         {
@@ -48,7 +60,7 @@ static class Program
                     "NuGet 包管理器", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
             };
             var app = Application.Create().UseWin32().UseDirect2D();
-            app.BuildMainWindow(() => MainWindow.Create(controller, directory, recoveryDirectory)).Run();
+            app.BuildMainWindow(() => MainWindow.Create(controller, directory, recoveryDirectory, preferences, preferenceStore)).Run();
             return 0;
         }
         catch (Exception ex)

@@ -57,7 +57,7 @@ internal sealed class MainWindow : Window
     private CancellationTokenSource? _searchCts;
     private CancellationTokenSource? _detailsCts;
 
-    private MainWindow(WorkspaceController controller, string? initialDirectory, string? recoveryDirectory)
+    private MainWindow(WorkspaceController controller, string? initialDirectory, string? recoveryDirectory, AppPreferences? preferences, AppPreferenceStore? preferenceStore)
     {
         _controller = controller;
         _initialDirectory = initialDirectory;
@@ -95,8 +95,9 @@ internal sealed class MainWindow : Window
         });
     }
 
-    public static Window Create(WorkspaceController controller, string? initialDirectory = null, string? recoveryDirectory = null) =>
-        new MainWindow(controller, initialDirectory, recoveryDirectory);
+    public static Window Create(WorkspaceController controller, string? initialDirectory = null, string? recoveryDirectory = null,
+        AppPreferences? preferences = null, AppPreferenceStore? preferenceStore = null) =>
+        new MainWindow(controller, initialDirectory, recoveryDirectory, preferences, preferenceStore);
 
     /// <summary>Offers recovery for operations that did not finish last time. Files change only on an explicit choice.</summary>
     private async Task CheckRecoveryAsync()
