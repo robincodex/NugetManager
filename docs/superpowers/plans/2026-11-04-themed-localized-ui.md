@@ -15,7 +15,7 @@
 - Continue in the current host-managed worktree; do not request another.
 - No dependency or MewUI version changes without evidence and approval.
 - Preserve installed inventory, source mapping/credentials, central version semantics, transaction/recovery and preview consent.
-- English and Simplified Chinese; theme and language default to system and persist per user, not per workspace.
+- Simplified Chinese, English, Korean and Russian; theme and language default to system and persist per user, not per workspace.
 - Default all enabled sources; one selected source takes 30, multiple sources take 10 each, empty selection sends no requests.
 - Use actual ProgressRing, SegmentedControl and ContextMenu controls, not text glyph substitutes.
 - No reflection-based JSON or broad trimming roots for new types.
@@ -39,22 +39,22 @@
 - Modify domain/operation message models and their producers as listed in Task 1; never translate package data or SDK output.
 - Modify catalog/controller/window/metadata/Program and directly related tests as assigned below.
 
-### Task 1: Preference persistence and live bilingual presentation messages
+### Task 1: Preference persistence and live four-language presentation messages
 
 **Files:** create `AppPreferences.cs`, `AppLocalization.cs`; modify `Program.cs`, `PresentationModel.cs`, `WorkspaceController.cs`, `OperationDialog.cs`, `MainWindow.cs`, `Domain\PackageModels.cs`, `Domain\WorkspaceModels.cs`, `Operations\OperationModels.cs`, `PackageOperations.cs`, `FileTransaction.cs`, `RecoveryCoordinator.cs`, `Packages\NuGetConfigReader.cs`, `PackageCatalog.cs`, `PackageMetadataReader.cs`, `PopularPackageReader.cs`, `Sdk\SdkClient.cs`, `SdkClient.Core.cs`, `ProcessRunner.cs`, `Workspaces\WorkspaceDiscovery.cs`; create `NugetManager.Tests\AppLocalizationTests.cs`, `AppPreferencesTests.cs`; adjust existing exact-message assertions only to explicitly format the intended locale.
 
 **Interfaces:**
-- `UiLanguage { System, SimplifiedChinese, English }`, `UiTheme { System, Light, Dark }`.
+- `UiLanguage { System, SimplifiedChinese, English, Korean, Russian }`, `UiTheme { System, Light, Dark }`.
 - `AppPreferences(UiTheme Theme, UiLanguage Language)`; `AppPreferenceStore(string path).LoadAsync(CancellationToken)` and `.SaveAsync(AppPreferences, CancellationToken)`; missing file returns defaults, other failures propagate to the UI boundary.
-- `TextKey` enum, immutable `UiMessage(TextKey Key, IReadOnlyList<string> Arguments)`; `AppLocalization.ResolveLanguage(UiLanguage, CultureInfo)` and `Format(UiMessage, UiLanguage, CultureInfo)`; resources cover every TextKey in both languages.
+- `TextKey` enum, immutable `UiMessage(TextKey Key, IReadOnlyList<string> Arguments)`; `AppLocalization.ResolveLanguage(UiLanguage, CultureInfo)` and `Format(UiMessage, UiLanguage, CultureInfo)`; resources cover every TextKey in all four languages. Resolve zh/ko/ru to their resources and unsupported cultures to English.
 - Generated status/notice/diagnostic/progress/confirmation/recovery messages retain key + arguments, not already localized strings. External text is retained as a literal payload and formatted under a localized prefix. Keep types independent of MewUI; use explicit localizer at display time, not mutable global culture in worker threads.
 - Later UI uses preference changes to invalidate text render keys; domain/operation control flow remains unchanged.
 
-- [ ] Add failing `SystemLanguageResolvesChineseOrEnglish`, `EveryKeyHasMatchingFormatArguments`, `ExistingMessagesCanRenderInBothLanguages`, `FormattingDoesNotTranslateLiteralSdkOutput`; assert zh/en status strings and unchanged package IDs/paths. Add `PreferencesRoundTrip`, `MissingPreferencesUseSystemDefaults`, `CorruptPreferencesAreReported`, `FailedWritePreservesOriginalFile` in isolated directories.
+- [ ] Add failing `SystemLanguageResolvesAllSupportedLanguages`, `EveryKeyHasMatchingFormatArguments`, `ExistingMessagesCanRenderInAllFourLanguages`, `FormattingDoesNotTranslateLiteralSdkOutput`; assert zh/en/ko/ru status strings, en fallback for unsupported culture, unchanged package IDs/paths and complete resources (no silent missing-key fallback). Add `PreferencesRoundTrip` for all four languages, `MissingPreferencesUseSystemDefaults`, `CorruptPreferencesAreReported`, `FailedWritePreservesOriginalFile` in isolated directories.
 - [ ] Run `dotnet test NugetManager.Tests\NugetManager.Tests.csproj --filter "FullyQualifiedName~AppLocalizationTests|FullyQualifiedName~AppPreferencesTests"`; expected red for absent interfaces, then assertion red for missing behavior.
 - [ ] Implement typed resource/message and preference interfaces. Source-generate preference JSON; save through a sibling temporary file and atomic replacement, clean owned temporary file on failure. Convert application-generated text at its producer, including blocked operations and cached details origins; preserve SDK/OS/package data as literals. Surface preference failures; no silent catch.
 - [ ] Wire startup load and error reporting, retaining default startup only with an explicit readable warning if loading fails. Do not add selectors yet. Run targeted tests; expected all pass.
-- [ ] Run existing tests covering changed producer paths and commit `feat: add persistent preferences and bilingual messages`.
+- [ ] Run existing tests covering changed producer paths and commit `feat: add persistent preferences and localized messages`.
 
 ### Task 2: Explicit multi-source browsing and controller cache identity
 
@@ -103,7 +103,7 @@
 - [ ] Replace tabs with SegmentedControl. Build source popup with select-all/indeterminate, individual checkboxes and explicit empty state. Submit current query alongside selection. Respect per-source grouped results and in-flight generations.
 - [ ] Add independent middle workspace/check rings, stop inactive/hidden clocks. Wire source-aware native context menu to every package-row surface, retain disabled missing links, update enabled state only for current open menu identity.
 - [ ] Theme all dynamic row/header/selection, text, glyph and dialog colors via AppTheme. Check actual controls and palette refresh rather than testing only upstream setters.
-- [ ] Document preferences, bilingual behavior, multi-source semantics and link restrictions in README. Run targeted tests; expected all pass. Commit `feat: deliver themed localized native package interactions`.
+- [ ] Document preferences, all four supported languages, multi-source semantics and link restrictions in README. Run targeted tests; expected all pass. Commit `feat: deliver themed localized native package interactions`.
 
 ### Task 5: Full regression and final native verification
 
@@ -111,9 +111,9 @@
 
 - [ ] Run `dotnet test NugetManager.Tests\NugetManager.Tests.csproj`; expected all pass with no hidden skipped suites; report existing warnings separately.
 - [ ] Run `dotnet publish NugetManager\NugetManager.csproj -c Release -r win-x64 -p:PublishAot=true`; expected exit 0, no new AOT/trim warnings.
-- [ ] Launch the exact exe on an isolated three-source fixture. Verify first installed workspace/check loading, cancel/retry/terminal rings, light/dark/system, en/zh instant switch and preferences after restart, segmented tabs, all/two/one/zero source selection, 10/30 limits, source-specific duplicate details, paging and config changes.
+- [ ] Launch the exact exe on an isolated three-source fixture. Verify first installed workspace/check loading, cancel/retry/terminal rings, light/dark/system, zh/en/ko/ru instant switch and preferences after restart, Korean font fallback and Russian long-label layout, segmented tabs, all/two/one/zero source selection, 10/30 limits, source-specific duplicate details, paging and config changes.
 - [ ] Right-click a nonselected installed/browse row with/without repository. Verify menu disabled/enabled state, correct source/version, safe link opening with controlled HTTP(S) fixture, no changed upgrade checkboxes, and menu-close stale response isolation. Preserve original package files.
-- [ ] Recheck upgrade preview/confirm/cancel and recovery dialog under both themes/languages. Stop exact owned PID and verify no SDK children. Record any environment-blocked manual checks explicitly; clean only owned fixture paths.
+- [ ] Recheck upgrade preview/confirm/cancel and recovery dialog under light/dark themes and all four languages. Stop exact owned PID and verify no SDK children. Record any environment-blocked manual checks explicitly; clean only owned fixture paths.
 - [ ] Run `git diff --check`, commit related verification fixes with regression tests. Perform one fresh-context whole-branch review; reproduce and fix important findings TDD, rerun full suite and publish if product changes.
 - [ ] Ask user for integration choice; do not auto-merge.
 
