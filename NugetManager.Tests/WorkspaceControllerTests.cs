@@ -52,6 +52,9 @@ internal sealed class FakeCatalog : IPackageCatalog
     public UpdateReport Report { get; set; } = new([], [], true);
     public Exception? UpdateError { get; set; }
     public Func<string, int, Task<SearchPage>>? Search { get; set; }
+    public Func<string?, bool, Task<BrowsePage>>? Browse { get; set; }
+    public Func<string?, Task<PackageVersions>>? Versions { get; set; }
+    public Func<string, string?, Task<SearchPage>>? SourceSearch { get; set; }
     public List<bool> PrereleaseRequests { get; } = [];
 
     public Task<UpdateReport> FindUpdatesAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation> evaluations, WorkspaceScope scope, bool includePrerelease, CancellationToken ct)
@@ -61,13 +64,13 @@ internal sealed class FakeCatalog : IPackageCatalog
     }
 
     public Task<SearchPage> SearchAsync(Workspace workspace, string query, int skip, int take, bool includePrerelease, CancellationToken ct, string? sourceName = null) =>
-        Search?.Invoke(query, skip) ?? Task.FromResult(new SearchPage([], skip, take, false, []));
+        SourceSearch?.Invoke(query, sourceName) ?? Search?.Invoke(query, skip) ?? Task.FromResult(new SearchPage([], skip, take, false, []));
 
     public Task<PackageVersions> GetVersionsAsync(Workspace workspace, string packageId, bool includePrerelease, CancellationToken ct, string? sourceName = null) =>
-        Task.FromResult(new PackageVersions(packageId, ["3.0.0", "2.0.0", "1.0.0"], []));
+        Versions?.Invoke(sourceName) ?? Task.FromResult(new PackageVersions(packageId, ["3.0.0", "2.0.0", "1.0.0"], []));
 
     public Task<BrowsePage> BrowseAsync(Workspace workspace, string? sourceName, bool includePrerelease, CancellationToken ct) =>
-        Task.FromResult(new BrowsePage([]));
+        Browse?.Invoke(sourceName, includePrerelease) ?? Task.FromResult(new BrowsePage([]));
 }
 
 internal sealed class FakeMetadata : IPackageMetadataReader

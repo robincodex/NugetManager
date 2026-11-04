@@ -25,6 +25,23 @@ public class PackageMetadataReaderTests
         new(new HttpClient(handler ?? new RecordingHandler()), ws.PackagesDirectory, Path.Combine(ws.Root, "no-user-config.xml"));
 
     [Fact]
+    public async Task ExplicitSourceDoesNotUseAnotherSourcesCachedMetadata()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        ws.AddPackage("Example.Json", "1.0.0", description: "cached local");
+        var project = ws.WriteProject("App/App.csproj", "net10.0", ("Example.Json", "1.0.0"));
+        await ws.RestoreAsync(project);
+        var second = ws.Path_("second");
+        Directory.CreateDirectory(second);
+        var other = ws.AddPackage("Example.Json", "1.0.0", description: "from second");
+        File.Move(other, Path.Combine(second, Path.GetFileName(other)));
+        ws.WriteNuGetConfig($"""<add key="second" value="{second}" />""");
+        var details = await Reader(ws).ReadAsync(WorkspaceOf(ws), "Example.Json", "1.0.0", "second", CancellationToken.None);
+        Assert.Equal("from second", details.Description);
+        Assert.Equal("本地包源 second", details.Origin);
+    }
+
+    [Fact]
     public async Task LocalPackageShowsFrameworkGroups()
     {
         await using var ws = await TestWorkspace.CreateAsync();

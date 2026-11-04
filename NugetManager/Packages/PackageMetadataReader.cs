@@ -45,7 +45,26 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
         var cacheDir = Path.Combine(gpf, idLower, versionLower);
         var cachedNuspec = Path.Combine(cacheDir, idLower + ".nuspec");
-        if (File.Exists(cachedNuspec))
+        var cacheAllowed = sourceName is null;
+        var cacheMetadata = Path.Combine(cacheDir, ".nupkg.metadata");
+        if (!cacheAllowed && File.Exists(cacheMetadata))
+        {
+            try
+            {
+                await using var metadataStream = File.OpenRead(cacheMetadata);
+                using var metadata = await JsonDocument.ParseAsync(metadataStream, cancellationToken: ct).ConfigureAwait(false);
+                var cachedSource = metadata.RootElement.TryGetProperty("source", out var origin) && origin.ValueKind == JsonValueKind.String
+                    ? origin.GetString() : null;
+                cacheAllowed = cachedSource is not null && settings.SourcesFor(packageId).Any(s =>
+                    string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(s.Location.TrimEnd('/', '\\'), cachedSource.TrimEnd('/', '\\'), StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+            {
+                diagnostics.Add(new SourceDiagnostic(sourceName!, "CacheSourceUnknown", $"无法确认缓存来源：{ex.Message}"));
+            }
+        }
+        if (cacheAllowed && File.Exists(cachedNuspec))
         {
             await using var stream = File.OpenRead(cachedNuspec);
             var frameworks = FrameworkFolders(Directory.EnumerateDirectories(cacheDir)
