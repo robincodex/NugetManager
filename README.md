@@ -69,6 +69,11 @@ dotnet test NugetManager.Tests\NugetManager.Tests.csproj
 
 集成测试会在临时目录中创建隔离的 NuGet 配置、本地包源和全局包目录，并调用真实的 .NET SDK，不访问网络源。
 
+原生界面测试还会在 STA 线程运行真实窗口，验证主题、语言、菜单和加载环绑定。扩展 MewUI 界面时注意：
+
+- `BuildMainWindow` 执行期间 `Application.Current` 尚未初始化；依赖当前主题的布局和主题订阅应在窗口 `Loaded` 后初始化。
+- 显式设置的背景色不会自动随主题重算；工具栏、状态栏等静态容器也必须加入配色刷新，不能只检查动态包行。相关回归测试见 [NativeWindowBindingTests](NugetManager.Tests/NativeWindowBindingTests.cs)。
+
 ## 发布
 
 已验证的发布方式为 win-x64 Native AOT，单个约 20 MB 的原生可执行文件，发布过程无 AOT/裁剪告警，无需额外的裁剪根配置：
