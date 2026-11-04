@@ -1,3 +1,4 @@
+using static NugetManager.Presentation.Messages;
 using Aprillz.MewUI;
 using System.Globalization;
 using System.Text.Json;
@@ -27,14 +28,14 @@ static class Program
         string? directory = null;
         if (args.Length > 1)
         {
-            return Fail("用法：NugetManager [工作目录]");
+            return Fail(M(TextKey.M217), preferences.Language);
         }
         if (args.Length == 1)
         {
             directory = Path.GetFullPath(args[0]);
             if (!Directory.Exists(directory))
             {
-                return Fail($"工作目录不存在：{directory}");
+                return Fail(MF(TextKey.M218, $"工作目录不存在：{directory}"), preferences.Language);
             }
         }
 
@@ -51,29 +52,34 @@ static class Program
             new PackageMetadataReader(http),
             new PackageOperations(sdk, recoveryDirectory));
 
+        MainWindow? mainWindow = null;
         try
         {
             Application.DispatcherUnhandledException += e =>
             {
                 e.Handled = true;
-                NativeMessageBox.Show("发生未处理的错误，当前操作可能未完成：" + Environment.NewLine + e.Exception.Message,
-                    "NuGet 包管理器", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
+                var language = mainWindow?.Language ?? preferences.Language;
+                NativeMessageBox.Show(AppLocalization.Format(M(TextKey.M219) + Environment.NewLine + UiMessage.FromException(e.Exception),
+                    language, CultureInfo.CurrentUICulture),
+                    AppLocalization.Format(M(TextKey.AppTitle), language, CultureInfo.CurrentUICulture),
+                    NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
             };
             var app = Application.Create().UseWin32().UseDirect2D();
-            app.BuildMainWindow(() => MainWindow.Create(controller, directory, recoveryDirectory, preferences, preferenceStore)).Run();
+            app.BuildMainWindow(() => mainWindow = MainWindow.Create(controller, directory, recoveryDirectory, preferences, preferenceStore)).Run();
             return 0;
         }
         catch (Exception ex)
         {
-            return Fail("启动失败：" + ex.Message);
+            return Fail(M(TextKey.M220) + UiMessage.FromException(ex), mainWindow?.Language ?? preferences.Language);
         }
     }
 
-    private static int Fail(string message)
+    private static int Fail(UiMessage message, UiLanguage language)
     {
         try
         {
-            NativeMessageBox.Show(message, "NuGet 包管理器", NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
+            NativeMessageBox.Show(AppLocalization.Format(message, language, CultureInfo.CurrentUICulture),
+                AppLocalization.Format(M(TextKey.AppTitle), language, CultureInfo.CurrentUICulture), NativeMessageBoxButtons.Ok, NativeMessageBoxIcon.Error);
         }
         catch (Exception)
         {

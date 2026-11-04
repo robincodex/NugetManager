@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -9,16 +11,23 @@ using NugetManager.Domain;
 namespace NugetManager.Sdk;
 
 internal sealed class SdkCommandException(string command, int exitCode, string output)
-    : Exception($"命令失败（退出码 {exitCode}）：dotnet {command}\n{output}".TrimEnd())
+    : Exception(MF(TextKey.M224, $"命令失败（退出码 {exitCode}）：dotnet {command}\n{output}").ToString().TrimEnd()), IUiException
 {
+    public UiMessage UiMessage { get; } = MF(TextKey.M224, $"命令失败（退出码 {exitCode}）：dotnet {command}\n{output.TrimEnd()}");
     public string Command { get; } = command;
     public int ExitCode { get; } = exitCode;
     public string Output { get; } = output;
 }
 
-internal sealed class SdkOutputException(string message, Exception? inner = null) : Exception(message, inner);
+internal sealed class SdkOutputException(UiMessage message, Exception? inner = null) : Exception(message.ToString(), inner), IUiException
+{
+    public UiMessage UiMessage { get; } = message;
+}
 
-internal sealed class SdkCapabilityException(string message, Exception? inner = null) : Exception(message, inner);
+internal sealed class SdkCapabilityException(UiMessage message, Exception? inner = null) : Exception(message.ToString(), inner), IUiException
+{
+    public UiMessage UiMessage { get; } = message;
+}
 
 internal interface ISdkClient
 {
@@ -64,19 +73,19 @@ internal sealed partial class SdkClient : ISdkClient
         }
         catch (ProcessStartException ex)
         {
-            throw new SdkCapabilityException("未找到 dotnet 命令。请安装 .NET 10 SDK 并确保 dotnet 位于 PATH 中。", ex);
+            throw new SdkCapabilityException(M(TextKey.M225), ex);
         }
         var version = result.Stdout.Trim();
         if (result.ExitCode != 0 || !NuGetVersionComparer.TryParse(version, out var parsed))
         {
             var detail = Redact((result.Stdout + "\n" + result.Stderr).Trim());
             throw new SdkCapabilityException(
-                $"无法在此工作目录解析可用的 .NET SDK（可能由 global.json 固定了未安装的版本）。需要具备 .NET 10 命令能力的 SDK。\n{detail}");
+                MF(TextKey.M226, $"无法在此工作目录解析可用的 .NET SDK（可能由 global.json 固定了未安装的版本）。需要具备 .NET 10 命令能力的 SDK。\n{detail}"));
         }
         if (parsed.Major < 10)
         {
             throw new SdkCapabilityException(
-                $"当前工作目录使用的 .NET SDK 为 {version}（受 global.json 影响时以其为准），需要 .NET 10 或更高版本的 SDK 才能使用 package list/search/add/remove 的结构化输出。");
+                MF(TextKey.M227, $"当前工作目录使用的 .NET SDK 为 {version}（受 global.json 影响时以其为准），需要 .NET 10 或更高版本的 SDK 才能使用 package list/search/add/remove 的结构化输出。"));
         }
         return version;
     }
@@ -101,7 +110,7 @@ internal sealed partial class SdkClient : ISdkClient
         }
         if (frameworks.Count == 0)
         {
-            throw new SdkOutputException($"无法确定项目 {project.Name} 的目标框架。");
+            throw new SdkOutputException(MF(TextKey.M228, $"无法确定项目 {project.Name} 的目标框架。"));
         }
 
         var perFramework = new List<(string Framework, MsBuildOutput Output)>();
@@ -179,18 +188,18 @@ internal sealed partial class SdkClient : ISdkClient
             expression = versionOverride;
         }
 
-        string? block = null;
+        UiMessage? block = null;
         if (IsTrue(Get(item, "IsImplicitlyDefined")))
         {
-            block = "SDK 自动引用，由 SDK 管理，不能直接升级或卸载。";
+            block = M(TextKey.M229);
         }
         else if (!PathUtil.AreEqual(declaration, project.Path))
         {
-            block = $"引用声明位于导入文件 {Path.GetFileName(declaration)}（{declaration}），为避免产生重复引用，请在该文件中手动修改。";
+            block = MF(TextKey.M230, $"引用声明位于导入文件 {Path.GetFileName(declaration)}（{declaration}），为避免产生重复引用，请在该文件中手动修改。");
         }
         else if (versionOverride is not null)
         {
-            block = "引用使用 VersionOverride 覆盖集中版本，第一版不自动修改覆盖策略。";
+            block = M(TextKey.M231);
         }
         else
         {
@@ -203,16 +212,16 @@ internal sealed partial class SdkClient : ISdkClient
             {
                 if (centralPath is null)
                 {
-                    block = "已启用集中版本管理，但未找到对应的 PackageVersion 条目。";
+                    block = M(TextKey.M232);
                 }
                 else if (raw.HasVersion)
                 {
-                    block = "集中版本管理下引用仍声明了 Version，请先修正项目配置。";
+                    block = M(TextKey.M233);
                 }
                 else
                 {
                     var centralRaw = inspector.Inspect(centralPath, "PackageVersion", id);
-                    block = centralRaw.Problem is null ? null : "集中版本条目：" + centralRaw.Problem;
+                    block = centralRaw.Problem is null ? null : M(TextKey.M234) + centralRaw.Problem;
                 }
             }
         }
@@ -228,12 +237,12 @@ internal sealed partial class SdkClient : ISdkClient
 
     public async Task<PackageInventory> ReadInventoryAsync(Workspace workspace, IReadOnlyList<ProjectEvaluation>? evaluations, CancellationToken ct)
     {
-        var results = new (List<PackageOccurrence>? Items, string? Error)[workspace.Projects.Count];
+        var results = new (List<PackageOccurrence>? Items, UiMessage? Error)[workspace.Projects.Count];
 
         // Always restore first: "package list --no-restore" happily reports stale assets after an
         // external edit, and a restore whose inputs are unchanged is a cheap no-op. Restores run
         // sequentially because projects may share referenced projects' obj folders.
-        var restoreErrors = new string?[workspace.Projects.Count];
+        var restoreErrors = new UiMessage?[workspace.Projects.Count];
         for (var i = 0; i < restoreErrors.Length; i++)
         {
             var project = workspace.Projects[i];
@@ -244,7 +253,7 @@ internal sealed partial class SdkClient : ISdkClient
             }
             catch (SdkCommandException ex)
             {
-                restoreErrors[i] = ex.Message;
+                restoreErrors[i] = UiMessage.FromException(ex);
             }
         }
 
@@ -277,13 +286,13 @@ internal sealed partial class SdkClient : ISdkClient
             }
             else
             {
-                problems.Add(new ProjectProblem(project.Path, results[i].Error ?? "无法读取依赖。"));
+                problems.Add(new ProjectProblem(project.Path, results[i].Error ?? M(TextKey.M235)));
             }
         }
         return new PackageInventory(occurrences) { Problems = problems };
     }
 
-    private async Task<(List<PackageOccurrence>? Items, string? Error)> TryListAsync(ProjectDescriptor project, CancellationToken ct)
+    private async Task<(List<PackageOccurrence>? Items, UiMessage? Error)> TryListAsync(ProjectDescriptor project, CancellationToken ct)
     {
         var dir = Path.GetDirectoryName(project.Path)!;
         var result = await RunRawAsync(dir,
@@ -294,7 +303,7 @@ internal sealed partial class SdkClient : ISdkClient
         {
             if (result.ExitCode == 0)
             {
-                throw new SdkOutputException($"dotnet package list 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}");
+                throw new SdkOutputException(MF(TextKey.M236, $"dotnet package list 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}"));
             }
             return (null, Redact((result.Stdout + "\n" + result.Stderr).Trim()));
         }
@@ -386,7 +395,7 @@ internal sealed partial class SdkClient : ISdkClient
         if (output is null)
         {
             throw result.ExitCode == 0
-                ? new SdkOutputException($"dotnet package list --outdated 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}")
+                ? new SdkOutputException(MF(TextKey.M237, $"dotnet package list --outdated 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}"))
                 : new SdkCommandException(ProcessRunner.Describe(args), result.ExitCode, Redact((result.Stdout + "\n" + result.Stderr).Trim()));
         }
         if (result.ExitCode != 0 && !AllProblems(output).Any())
@@ -420,7 +429,7 @@ internal sealed partial class SdkClient : ISdkClient
         if (output is null)
         {
             throw result.ExitCode == 0
-                ? new SdkOutputException($"dotnet package search 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}")
+                ? new SdkOutputException(MF(TextKey.M238, $"dotnet package search 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}"))
                 : new SdkCommandException(ProcessRunner.Describe(args), result.ExitCode, Redact((result.Stdout + "\n" + result.Stderr).Trim()));
         }
         foreach (var p in output.Problems ?? [])
@@ -476,7 +485,7 @@ internal sealed partial class SdkClient : ISdkClient
     {
         var result = await RunCheckedAsync(directory, args, timeout, ct).ConfigureAwait(false);
         return TryParse(result.Stdout, info)
-            ?? throw new SdkOutputException($"dotnet {args[0]} 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}");
+            ?? throw new SdkOutputException(MF(TextKey.M239, $"dotnet {args[0]} 返回了无法识别的输出：{Truncate(Redact(result.Stdout))}"));
     }
 
     private Task<ProcessResult> RunRawAsync(string directory, IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
@@ -554,7 +563,7 @@ internal sealed partial class SdkClient : ISdkClient
     {
         private readonly Dictionary<string, XDocument?> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-        public (bool HasVersion, string? Problem) Inspect(string file, string elementName, string id)
+        public (bool HasVersion, UiMessage? Problem) Inspect(string file, string elementName, string id)
         {
             if (!_cache.TryGetValue(file, out var doc))
             {
@@ -563,7 +572,7 @@ internal sealed partial class SdkClient : ISdkClient
             }
             if (doc is null)
             {
-                return (false, $"无法读取声明文件 {file}。");
+                return (false, MF(TextKey.M240, $"无法读取声明文件 {file}。"));
             }
             var matches = doc.Descendants()
                 .Where(e => e.Name.LocalName == elementName)
@@ -572,21 +581,21 @@ internal sealed partial class SdkClient : ISdkClient
                 .ToList();
             if (matches.Count == 0)
             {
-                return (false, $"无法在 {Path.GetFileName(file)} 中定位 {id} 的 {elementName} 声明（可能使用了通配符或属性生成）。");
+                return (false, MF(TextKey.M241, $"无法在 {Path.GetFileName(file)} 中定位 {id} 的 {elementName} 声明（可能使用了通配符或属性生成）。"));
             }
             if (matches.Count > 1)
             {
-                return (false, $"{Path.GetFileName(file)} 中存在多个 {id} 的 {elementName} 声明，无法安全确定写入目标。");
+                return (false, MF(TextKey.M242, $"{Path.GetFileName(file)} 中存在多个 {id} 的 {elementName} 声明，无法安全确定写入目标。"));
             }
             var element = matches[0];
             if (element.AncestorsAndSelf().Any(a => a.Attribute("Condition") is not null || a.Name.LocalName is "When" or "Otherwise"))
             {
-                return (false, $"{id} 在 {Path.GetFileName(file)} 中是条件引用，自动写入会丢失条件，请手动修改。");
+                return (false, MF(TextKey.M243, $"{id} 在 {Path.GetFileName(file)} 中是条件引用，自动写入会丢失条件，请手动修改。"));
             }
             var version = (string?)element.Attribute("Version") ?? element.Elements().FirstOrDefault(e => e.Name.LocalName == "Version")?.Value;
             if (version is not null && (version.Contains("$(") || version.Contains("@(") || version.Contains("%(")))
             {
-                return (true, $"{id} 的版本使用了表达式 {version}，自动写入会替换表达式，请手动修改。");
+                return (true, MF(TextKey.M244, $"{id} 的版本使用了表达式 {version}，自动写入会替换表达式，请手动修改。"));
             }
             return (version is not null, null);
         }

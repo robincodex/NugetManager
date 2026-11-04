@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using NugetManager.Domain;
 using NugetManager.Sdk;
 
@@ -45,14 +47,14 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
         {
             if (output is null)
             {
-                diagnostics.Add(new SourceDiagnostic(evaluation.Project.Name, "UpdateCheckFailed", error?.Message ?? "无法检查更新。"));
+                diagnostics.Add(new SourceDiagnostic(evaluation.Project.Name, "UpdateCheckFailed", error is null ? M(TextKey.M044) : UiMessage.FromException(error)));
                 continue;
             }
             foreach (var problem in SdkClient.AllProblems(output))
             {
                 diagnostics.Add(new SourceDiagnostic(evaluation.Project.Name,
                     string.Equals(problem.Level, "warning", StringComparison.OrdinalIgnoreCase) ? "SourceWarning" : "SourceError",
-                    problem.Text ?? "包源查询失败。"));
+                    problem.Text ?? M(TextKey.M045)));
             }
             foreach (var framework in (output.Projects ?? []).SelectMany(p => p.Frameworks ?? []))
             {
@@ -103,7 +105,7 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
             }
             catch (Exception ex) when (ex is SdkCommandException or SdkOutputException)
             {
-                return new SearchPage([], skip, take, false, [new SourceDiagnostic(name, "SearchFailed", ex.Message)]);
+                return new SearchPage([], skip, take, false, [new SourceDiagnostic(name, "SearchFailed", UiMessage.FromException(ex))]);
             }
             finally { gate.Release(); }
         })).ConfigureAwait(false);
@@ -192,7 +194,7 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
             catch (Exception ex) when (ex is SdkCommandException or SdkOutputException)
             {
                 return new BrowseSourcePage(source, BrowseKind.Ordinary,
-                    new SearchPage([], 0, take, false, [new SourceDiagnostic(source.Name, "BrowseFailed", ex.Message)]));
+                    new SearchPage([], 0, take, false, [new SourceDiagnostic(source.Name, "BrowseFailed", UiMessage.FromException(ex))]));
             }
             finally
             {
@@ -204,14 +206,14 @@ internal sealed class PackageCatalog(ISdkClient sdk, IPopularPackageReader? popu
 
     private static NuGetSource? FindSource(Workspace workspace, string? name) => name is null ? null
         : NuGetConfigReader.Load(workspace.Directory).Sources.FirstOrDefault(s => s.IsEnabled && string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new SdkOutputException($"包源不存在或已禁用：{name}");
+            ?? throw new SdkOutputException(MF(TextKey.M046, $"包源不存在或已禁用：{name}"));
 
     private static List<SourceDiagnostic> ToDiagnostics(SearchOutput output) =>
-        (output.Problems ?? []).Select(p => new SourceDiagnostic("", p.ProblemType ?? "SourceError", p.Text ?? "包源查询失败。")).ToList();
+        (output.Problems ?? []).Select(p => new SourceDiagnostic("", p.ProblemType ?? "SourceError", p.Text ?? M(TextKey.M045))).ToList();
 
     private static IEnumerable<SourceDiagnostic> UnavailableLocalSources(Workspace workspace, string? sourceName) =>
         NuGetConfigReader.Load(workspace.Directory).Sources
             .Where(s => s.IsEnabled && (sourceName is null || string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase))
                 && !s.IsHttp && !Directory.Exists(s.Location))
-            .Select(s => new SourceDiagnostic(s.Name, "SourceUnavailable", $"本地包源目录不存在或无法访问：{s.Location}"));
+            .Select(s => new SourceDiagnostic(s.Name, "SourceUnavailable", MF(TextKey.M047, $"本地包源目录不存在或无法访问：{s.Location}")));
 }

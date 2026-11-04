@@ -1,3 +1,4 @@
+using NugetManager.Presentation;
 using System.Text;
 using NugetManager.Domain;
 using NugetManager.Operations;
@@ -68,7 +69,7 @@ internal sealed class HookedSdk(ISdkClient inner) : ISdkClient
 
 public class PackageOperationsTests
 {
-    private static readonly IProgress<string> NoProgress = new Progress<string>();
+    private static readonly IProgress<UiMessage> NoProgress = new Progress<UiMessage>();
 
     private static Workspace WorkspaceOf(TestWorkspace ws, params string[] projects) =>
         new(ws.Root, null, projects.Select(p => new ProjectDescriptor(p, Path.GetFileNameWithoutExtension(p))).ToList());
@@ -135,8 +136,8 @@ public class PackageOperationsTests
             [new(PackageAction.Upgrade, apiPath, "Example.Json", "3.0.0")], CancellationToken.None);
 
         Assert.Equal(new[] { apiPath, corePath }.Order().ToArray(), plan.AffectedProjects.Select(p => p.Path).Order().ToArray());
-        Assert.Contains(plan.Warnings, w => w.Contains("Core", StringComparison.Ordinal));
-        Assert.Contains(plan.Warnings, w => w.Contains("主版本", StringComparison.Ordinal));
+        Assert.Contains(plan.Warnings, w => TestMessages.Zh(w)!.Contains("Core", StringComparison.Ordinal));
+        Assert.Contains(plan.Warnings, w => TestMessages.Zh(w)!.Contains("主版本", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -233,7 +234,7 @@ public class PackageOperationsTests
 
         Assert.Equal(2, sdk.AddCalls);
         Assert.Equal(OperationStatus.RolledBack, result.Status);
-        Assert.Contains("injected failure", result.Error);
+        Assert.Contains("injected failure", TestMessages.Zh(result.Error));
         Assert.Equal(originalPropsBytes, await File.ReadAllBytesAsync(centralPropsPath));
         Assert.Equal("1.0.0", await ResolvedAsync(ws, core, "Example.Json"));
     }
@@ -292,7 +293,7 @@ public class PackageOperationsTests
         var result = await ops.ExecuteAsync(plan, NoProgress, cts.Token);
 
         Assert.Equal(OperationStatus.RolledBack, result.Status);
-        Assert.Contains("取消", result.Error);
+        Assert.Contains("取消", TestMessages.Zh(result.Error));
         Assert.Equal(originalA, await File.ReadAllBytesAsync(a));
     }
 

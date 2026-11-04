@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.Diagnostics;
 using System.Text;
 
@@ -12,9 +14,15 @@ internal sealed record ProcessRequest(
 
 internal sealed record ProcessResult(int ExitCode, string Stdout, string Stderr);
 
-internal sealed class ProcessTimeoutException(string message) : Exception(message);
+internal sealed class ProcessTimeoutException(UiMessage message) : Exception(message.ToString()), IUiException
+{
+    public UiMessage UiMessage { get; } = message;
+}
 
-internal sealed class ProcessStartException(string message, Exception inner) : Exception(message, inner);
+internal sealed class ProcessStartException(UiMessage message, Exception inner) : Exception(message.ToString(), inner), IUiException
+{
+    public UiMessage UiMessage { get; } = message;
+}
 
 internal interface IProcessRunner
 {
@@ -64,7 +72,7 @@ internal sealed class ProcessRunner : IProcessRunner
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            throw new ProcessStartException($"无法启动 {request.FileName}：{ex.Message}", ex);
+            throw new ProcessStartException(MF(TextKey.M221, $"无法启动 {request.FileName}：{UiMessage.FromException(ex)}"), ex);
         }
         LastProcessId = process.Id;
         process.StandardInput.Close();
@@ -84,10 +92,10 @@ internal sealed class ProcessRunner : IProcessRunner
             await DrainAsync(stdoutTask, stderrTask).ConfigureAwait(false);
             if (ct.IsCancellationRequested)
             {
-                throw new OperationCanceledException("命令已取消。", ct);
+                throw UiErrors.OperationCanceled(M(TextKey.M222), ct);
             }
             throw new ProcessTimeoutException(
-                $"{request.FileName} {Describe(request.Arguments)} 超过 {request.Timeout.TotalSeconds:0} 秒未完成，已终止。");
+                MF(TextKey.M223, $"{request.FileName} {Describe(request.Arguments)} 超过 {request.Timeout.TotalSeconds:0} 秒未完成，已终止。"));
         }
 
         var stdout = await stdoutTask.ConfigureAwait(false);

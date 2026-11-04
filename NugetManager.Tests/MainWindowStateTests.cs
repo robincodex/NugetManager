@@ -55,7 +55,7 @@ public class MainWindowStateTests
     [Fact]
     public void LoadingSlotsHaveIndependentLifetimesAndRespectVisibleMode()
     {
-        var state = State(false) with { IsBusy = true, SearchLoading = true, DetailsLoading = true, SelectedPackageId = "Example.Json" };
+        var state = State(false) with { IsBusy = true, SearchLoading = true, DetailsLoading = true, VersionsLoading = true, SelectedPackageId = "Example.Json" };
         var activity = PresentationModel.BuildActivity(state, true);
         Assert.True(activity.Workspace);
         Assert.True(activity.Search);
@@ -76,8 +76,8 @@ public class MainWindowStateTests
     {
         var source = new NuGetSource("local", @"C:\feed", true, false);
         var page = new SearchPage([new SearchHit("A", "1.0.0", "local", null)], 0, 10, false, []);
-        Assert.Equal("local · 普通浏览（1）", PresentationModel.BrowseGroupTitle(new(source, BrowseKind.Ordinary, page)));
-        Assert.Equal("local · 热门（1）", PresentationModel.BrowseGroupTitle(new(source, BrowseKind.Popular, page)));
+        Assert.Equal("local · 普通浏览（1）", TestMessages.Zh(PresentationModel.BrowseGroupTitle(new(source, BrowseKind.Ordinary, page))));
+        Assert.Equal("local · 热门（1）", TestMessages.Zh(PresentationModel.BrowseGroupTitle(new(source, BrowseKind.Popular, page))));
     }
 
     [Fact]
@@ -85,10 +85,10 @@ public class MainWindowStateTests
     {
         var model = PresentationModel.BuildPackageList(State(withUpgrades: true));
 
-        Assert.Equal(["可升级", "已安装", "隐式依赖", "SDK 自动引用"], model.Groups.Select(g => g.Title).ToArray());
+        Assert.Equal(["可升级", "已安装", "隐式依赖", "SDK 自动引用"], (model.Groups.Select(g => g.Title).ToArray()).Select(TestMessages.Zh));
         var installed = Assert.Single(model.Groups[1].Rows);
         Assert.Equal("Example.Json", installed.PackageId);
-        Assert.Equal("2 个项目", installed.ProjectsText);
+        Assert.Equal("2 个项目", TestMessages.Zh(installed.ProjectsText));
         Assert.Equal("1.0.0 → 3.0.0", Assert.Single(model.Groups[0].Rows).VersionText);
         Assert.Equal(PackageGroupKind.Implicit, model.Groups[2].Kind);
         Assert.False(Assert.Single(model.Groups[2].Rows).CanSelect);
@@ -103,7 +103,7 @@ public class MainWindowStateTests
         var upgradeButtonVisible = model.Groups.SelectMany(g => g.Actions).Any(a => a.Kind == GroupActionKind.UpgradeSelected);
         Assert.False(upgradeHeaderVisible);
         Assert.False(upgradeButtonVisible);
-        Assert.Equal("已安装", model.Groups[0].Title);
+        Assert.Equal("已安装", TestMessages.Zh(model.Groups[0].Title));
     }
 
     [Fact]
@@ -152,10 +152,10 @@ public class MainWindowStateTests
 
         var directProjectActionLabel = rows[0].ActionLabel;
         var transitiveProjectActionLabel = rows[1].ActionLabel;
-        Assert.Equal("卸载", directProjectActionLabel);
-        Assert.Equal("安装", transitiveProjectActionLabel);
-        Assert.Contains("net8.0", rows[1].VersionText);
-        Assert.Contains("隐式", rows[1].VersionText);
+        Assert.Equal("卸载", TestMessages.Zh(directProjectActionLabel));
+        Assert.Equal("安装", TestMessages.Zh(transitiveProjectActionLabel));
+        Assert.Contains("net8.0", TestMessages.Zh(rows[1].VersionText));
+        Assert.Contains("隐式", TestMessages.Zh(rows[1].VersionText));
         Assert.All(rows, r => Assert.True(r.ActionEnabled));
 
         var blocked = PresentationModel.BuildProjectRows(state with
@@ -163,7 +163,7 @@ public class MainWindowStateTests
             ProjectStates = [new ProjectPackageState(Api, [], ProjectAction.Uninstall, "条件引用")],
         });
         Assert.False(Assert.Single(blocked).ActionEnabled);
-        Assert.Equal("条件引用", blocked[0].Note);
+        Assert.Equal("条件引用", TestMessages.Zh(blocked[0].Note));
     }
 
     [Fact]
@@ -182,15 +182,15 @@ public class MainWindowStateTests
 
         var model = PresentationModel.BuildConfirmation(plan, state.Scope);
 
-        Assert.Contains(model.AffectedProjects, p => p.Contains("Core") && p.Contains("当前范围外"));
-        Assert.DoesNotContain(model.AffectedProjects, p => p.Contains("Api") && p.Contains("当前范围外"));
-        Assert.Contains(model.Changes, c => c.Contains("Example.Json") && c.Contains("3.0.0"));
+        Assert.Contains(model.AffectedProjects, p => TestMessages.Zh(p)!.Contains("Core") && TestMessages.Zh(p)!.Contains("当前范围外"));
+        Assert.DoesNotContain(model.AffectedProjects, p => TestMessages.Zh(p)!.Contains("Api") && TestMessages.Zh(p)!.Contains("当前范围外"));
+        Assert.Contains(model.Changes, c => TestMessages.Zh(c)!.Contains("Example.Json") && TestMessages.Zh(c)!.Contains("3.0.0"));
         Assert.NotEmpty(model.Warnings);
         Assert.True(model.CanConfirm);
         Assert.Equal(ApiPath, Assert.Single(state.VisibleProjects).Path);
 
         var blocked = PresentationModel.BuildConfirmation(plan with { Blockers = ["引用受条件控制"] }, state.Scope);
         Assert.False(blocked.CanConfirm);
-        Assert.Contains("引用受条件控制", blocked.Blockers);
+        Assert.Contains("引用受条件控制", (blocked.Blockers).Select(TestMessages.Zh));
     }
 }

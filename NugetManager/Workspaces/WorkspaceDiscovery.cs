@@ -1,14 +1,20 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.Text.RegularExpressions;
 using System.Xml;
 using NugetManager.Domain;
 
 namespace NugetManager.Workspaces;
 
-internal sealed class WorkspaceLoadException(string message, Exception? inner = null) : Exception(message, inner);
+internal sealed class WorkspaceLoadException(UiMessage message, Exception? inner = null) : Exception(message.ToString(), inner), IUiException
+{
+    public UiMessage UiMessage { get; } = message;
+}
 
 internal sealed class SolutionSelectionRequiredException(IReadOnlyList<string> solutions)
-    : Exception("工作目录包含多个解决方案，请选择一个。")
+    : Exception(M(TextKey.M245).ToString()), IUiException
 {
+    public UiMessage UiMessage => M(TextKey.M245);
     public IReadOnlyList<string> Solutions { get; } = solutions;
 }
 
@@ -57,7 +63,7 @@ internal sealed partial class WorkspaceDiscovery : IWorkspaceDiscovery
                 var sln = PathUtil.Normalize(solutionPath);
                 if (!File.Exists(sln))
                 {
-                    throw new WorkspaceLoadException($"解决方案不存在：{sln}");
+                    throw new WorkspaceLoadException(MF(TextKey.M246, $"解决方案不存在：{sln}"));
                 }
                 var projects = sln.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) ? ReadSlnx(sln) : ReadSln(sln);
                 return new Workspace(root, sln, Distinct(projects));
@@ -71,7 +77,7 @@ internal sealed partial class WorkspaceDiscovery : IWorkspaceDiscovery
         var root = PathUtil.Normalize(directory);
         if (!Directory.Exists(root))
         {
-            throw new WorkspaceLoadException($"工作目录不存在：{root}");
+            throw new WorkspaceLoadException(MF(TextKey.M218, $"工作目录不存在：{root}"));
         }
         return root;
     }
@@ -105,7 +111,7 @@ internal sealed partial class WorkspaceDiscovery : IWorkspaceDiscovery
         }
         catch (XmlException ex)
         {
-            throw new WorkspaceLoadException($"无法读取解决方案 {sln}：{ex.Message}", ex);
+            throw new WorkspaceLoadException(MF(TextKey.M247, $"无法读取解决方案 {sln}：{UiMessage.FromException(ex)}"), ex);
         }
         return result;
     }

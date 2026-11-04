@@ -111,7 +111,7 @@ public class PackageInventoryTests
         Assert.Equal(projectPath, reference.DeclarationPath);
         Assert.Equal(centralPropsPath, reference.CentralVersionPath);
         Assert.Equal("1.0.0", reference.VersionExpression);
-        Assert.True(reference.IsWritable, reference.WriteBlockReason);
+        Assert.True(reference.IsWritable, TestMessages.Zh(reference.WriteBlockReason));
         Assert.True(evaluation.CentralPackageManagement);
         Assert.Equal(centralPropsPath, evaluation.CentralPackagesFile);
     }
@@ -136,7 +136,7 @@ public class PackageInventoryTests
         Assert.Equal(props, occurrence.DeclarationPath);
         var reference = Assert.Single(evaluation.References);
         Assert.False(reference.IsWritable);
-        Assert.Contains("Directory.Build.props", reference.WriteBlockReason);
+        Assert.Contains("Directory.Build.props", TestMessages.Zh(reference.WriteBlockReason));
     }
 
     [Fact]

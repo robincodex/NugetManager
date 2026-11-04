@@ -151,7 +151,7 @@ public sealed class PackageWorkflowTests
 
         Assert.Equal(WorkspaceStatus.Failed, controller.State.Status);
         Assert.Equal(OperationStatus.RolledBack, controller.State.LastOperation!.Status);
-        Assert.Contains("NU1202", controller.State.LastOperation.Error);
+        Assert.Contains("NU1202", TestMessages.Zh(controller.State.LastOperation.Error));
         Assert.All(controller.State.LastOperation.Recovery, r => Assert.Equal(RecoveryStatus.Restored, r.Status));
         Assert.Equal(originalPropsBytes, await File.ReadAllBytesAsync(centralPropsPath));
         Assert.Equal(originalApi, await File.ReadAllBytesAsync(api));
@@ -185,8 +185,8 @@ public sealed class PackageWorkflowTests
         await tx.DisposeAsync();
 
         var pending = Assert.Single(await RecoveryCoordinator.FindAsync(RecoveryDirectory(ws), CancellationToken.None));
-        Assert.Null(pending.Error);
-        Assert.Equal("升级 Example.Json 到 3.0.0", pending.Description);
+        Assert.Null(TestMessages.Zh(pending.Error));
+        Assert.Equal("升级 Example.Json 到 3.0.0", TestMessages.Zh(pending.Description));
         Assert.True(Directory.Exists(pending.BackupDirectory));
         Assert.Equal(PendingFileState.OwnedChange, pending.Files.Single(f => f.Path == centralPropsPath).State);
         Assert.Equal(PendingFileState.Conflict, pending.Files.Single(f => f.Path == core).State);
@@ -219,7 +219,7 @@ public sealed class PackageWorkflowTests
 
         var pending = Assert.Single(await RecoveryCoordinator.FindAsync(RecoveryDirectory(ws), CancellationToken.None));
 
-        Assert.NotNull(pending.Error);
+        Assert.NotNull(TestMessages.Zh(pending.Error));
         Assert.Empty(pending.Files);
         Assert.False(pending.CanRecover);
         Assert.Equal(Path.GetFullPath(record), pending.BackupDirectory);

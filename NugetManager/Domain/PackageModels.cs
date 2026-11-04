@@ -1,4 +1,5 @@
 using NugetManager.Packages;
+using NugetManager.Presentation;
 
 namespace NugetManager.Domain;
 
@@ -26,7 +27,7 @@ internal sealed record EvaluatedReference(
     string? VersionExpression,
     string? VersionOverride,
     bool IsWritable,
-    string? WriteBlockReason)
+    UiMessage? WriteBlockReason)
 {
     public string ProjectPath { get; init; } = DeclarationPath;
 }
@@ -47,7 +48,7 @@ internal sealed record ProjectEvaluation(
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 }
 
-internal sealed record ProjectProblem(string ProjectPath, string Message);
+internal sealed record ProjectProblem(string ProjectPath, UiMessage Message);
 
 internal sealed record PackageInventory(IReadOnlyList<PackageOccurrence> Occurrences)
 {
@@ -64,13 +65,16 @@ internal sealed record UpdateCandidate(string PackageId, IReadOnlyList<PackageUp
         .OrderBy(v => v, NuGetVersionComparer.Instance).ToList();
 }
 
-internal sealed record SourceDiagnostic(string SourceName, string Code, string Message);
+internal sealed record SourceDiagnostic(string SourceName, string Code, UiMessage Message);
 
 internal sealed record UpdateReport(IReadOnlyList<UpdateCandidate> Candidates, IReadOnlyList<SourceDiagnostic> Diagnostics, bool IsComplete);
 
 internal sealed record SearchHit(string PackageId, string Version, string SourceName, string? Description);
 
-internal sealed record SearchPage(IReadOnlyList<SearchHit> Items, int Skip, int Take, bool HasMore, IReadOnlyList<SourceDiagnostic> Diagnostics);
+internal sealed record SearchPage(IReadOnlyList<SearchHit> Items, int Skip, int Take, bool HasMore, IReadOnlyList<SourceDiagnostic> Diagnostics)
+{
+    public int NextSkip => Skip + Take;
+}
 
 internal enum BrowseKind { Popular, Ordinary }
 
@@ -87,14 +91,14 @@ internal sealed record PackageDetails(
     string Version,
     string? Authors,
     string? Description,
-    string? License,
+    UiMessage? License,
     Uri? ProjectUrl,
     IReadOnlyList<string> Frameworks,
     IReadOnlyList<DependencyGroup> Dependencies,
     IReadOnlyList<SourceDiagnostic> Diagnostics)
 {
     /// <summary>Where the metadata came from (cache, local feed, or remote source).</summary>
-    public string? Origin { get; init; }
+    public UiMessage? Origin { get; init; }
     public Uri? RepositoryUrl { get; init; }
     public Uri? PackagePageUrl { get; init; }
     public string? SourceName { get; init; }

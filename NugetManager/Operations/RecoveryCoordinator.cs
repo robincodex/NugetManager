@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using NugetManager.Sdk;
 
 namespace NugetManager.Operations;
@@ -16,17 +18,17 @@ internal enum PendingFileState
     Unreadable,
 }
 
-internal sealed record PendingRecoveryFile(string Path, PendingFileState State, string Description);
+internal sealed record PendingRecoveryFile(string Path, PendingFileState State, UiMessage Description);
 
 /// <summary>An operation that neither committed nor rolled back, found at startup.</summary>
 internal sealed record PendingRecovery(
     string ManifestPath,
     string BackupDirectory,
-    string? Description,
+    UiMessage? Description,
     string? Phase,
     DateTimeOffset? StartedAt,
     IReadOnlyList<PendingRecoveryFile> Files,
-    string? Error)
+    UiMessage? Error)
 {
     public bool CanRecover => Error is null && Files.Any(f => f.State == PendingFileState.OwnedChange);
 }
@@ -62,7 +64,7 @@ internal static class RecoveryCoordinator
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
         {
-            return new PendingRecovery(manifestPath, directory, null, null, null, [], $"恢复记录无法读取：{ex.Message}");
+            return new PendingRecovery(manifestPath, directory, null, null, null, [], MF(TextKey.M037, $"恢复记录无法读取：{UiMessage.FromException(ex)}"));
         }
 
         var files = new List<PendingRecoveryFile>();
@@ -70,7 +72,8 @@ internal static class RecoveryCoordinator
         {
             files.Add(await ClassifyAsync(entry, ct).ConfigureAwait(false));
         }
-        return new PendingRecovery(manifestPath, directory, manifest.Description, manifest.Phase, manifest.StartedAt, files, null);
+        return new PendingRecovery(manifestPath, directory, manifest.LocalizedDescription
+            ?? (manifest.Description is { } description ? (UiMessage)description : null), manifest.Phase, manifest.StartedAt, files, null);
     }
 
     private static async Task<PendingRecoveryFile> ClassifyAsync(RecoveryEntry entry, CancellationToken ct)
@@ -82,24 +85,24 @@ internal static class RecoveryCoordinator
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return new PendingRecoveryFile(entry.Path, PendingFileState.Unreadable, $"无法读取当前文件：{ex.Message}");
+            return new PendingRecoveryFile(entry.Path, PendingFileState.Unreadable, MF(TextKey.M038, $"无法读取当前文件：{UiMessage.FromException(ex)}"));
         }
 
         if (currentHash == entry.OriginalHash)
         {
-            return new PendingRecoveryFile(entry.Path, PendingFileState.Unchanged, "与操作前一致，无需恢复");
+            return new PendingRecoveryFile(entry.Path, PendingFileState.Unchanged, M(TextKey.M039));
         }
         if (entry.Conflict)
         {
-            return new PendingRecoveryFile(entry.Path, PendingFileState.Conflict, entry.Message ?? "文件存在外部修改，不会自动覆盖");
+            return new PendingRecoveryFile(entry.Path, PendingFileState.Conflict, entry.LocalizedMessage ?? entry.Message ?? M(TextKey.M040));
         }
         if (entry.OwnedHash is not null && currentHash == entry.OwnedHash)
         {
-            return new PendingRecoveryFile(entry.Path, PendingFileState.OwnedChange, "内容为该操作写入的结果，可撤回到操作前");
+            return new PendingRecoveryFile(entry.Path, PendingFileState.OwnedChange, M(TextKey.M041));
         }
         return new PendingRecoveryFile(entry.Path, PendingFileState.Conflict,
             entry.OwnedHash is null
-                ? "操作中断时尚未确认此文件的写入归属，为避免覆盖他人改动不会自动撤回"
-                : "操作写入后文件又被修改，为避免覆盖他人改动不会自动撤回");
+                ? M(TextKey.M042)
+                : M(TextKey.M043));
     }
 }

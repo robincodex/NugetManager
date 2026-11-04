@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.Security.Cryptography;
 using System.Text.Json;
 using NugetManager.Sdk;
@@ -36,7 +38,7 @@ internal sealed class FileTransaction : IAsyncDisposable
         _manifest.Files.Select(f => new PlannedFile(f.Path, _originals[f.Path]?.ToArray())).ToList();
 
     public static async Task<FileTransaction> BeginAsync(IReadOnlyList<string> paths, string recoveryDirectory, CancellationToken ct,
-        ChangeValidator? validator = null, string? description = null)
+        ChangeValidator? validator = null, UiMessage? description = null)
     {
         var id = $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"[..27];
         var directory = Path.Combine(Path.GetFullPath(recoveryDirectory), id);
@@ -44,7 +46,8 @@ internal sealed class FileTransaction : IAsyncDisposable
         var manifest = new RecoveryManifest
         {
             OperationId = id,
-            Description = description,
+            Description = description?.ToString(),
+            LocalizedDescription = description,
             Phase = "Prepared",
             StartedAt = DateTimeOffset.Now,
         };
@@ -68,7 +71,7 @@ internal sealed class FileTransaction : IAsyncDisposable
                     await File.WriteAllBytesAsync(backup, bytes, ct).ConfigureAwait(false);
                     if (Hash(await File.ReadAllBytesAsync(backup, ct).ConfigureAwait(false)) != entry.OriginalHash)
                     {
-                        throw new IOException($"备份 {path} 校验失败。");
+                        throw UiErrors.IO(MF(TextKey.M001, $"备份 {path} 校验失败。"));
                     }
                 }
                 originals[path] = bytes;
@@ -98,7 +101,8 @@ internal sealed class FileTransaction : IAsyncDisposable
             else
             {
                 entry.Conflict = true;
-                entry.Message = "执行期间文件出现了不属于本次操作的修改。";
+                entry.LocalizedMessage = M(TextKey.M002);
+                entry.Message = entry.LocalizedMessage.ToString();
             }
         }
         _manifest.Phase = "Applied";
@@ -165,7 +169,7 @@ internal sealed class FileTransaction : IAsyncDisposable
     {
         await using var stream = File.OpenRead(manifestPath);
         return await JsonSerializer.DeserializeAsync(stream, SdkJsonContext.Default.RecoveryManifest, ct).ConfigureAwait(false)
-            ?? throw new InvalidDataException($"恢复记录无效：{manifestPath}");
+            ?? throw UiErrors.InvalidData(MF(TextKey.M003, $"恢复记录无效：{manifestPath}"));
     }
 
     /// <summary>Startup recovery: restores files that are still original or exactly in the recorded owned state.</summary>
@@ -181,7 +185,7 @@ internal sealed class FileTransaction : IAsyncDisposable
                 : null;
             if (Hash(originals[entry.Path]) != entry.OriginalHash)
             {
-                throw new InvalidDataException($"{entry.Path} 的备份已损坏，无法自动恢复。备份目录：{directory}");
+                throw UiErrors.InvalidData(MF(TextKey.M004, $"{entry.Path} 的备份已损坏，无法自动恢复。备份目录：{directory}"));
             }
         }
         return await RestoreAsync(directory, manifest, null, originals, trustUnrecorded: false).ConfigureAwait(false);
@@ -214,7 +218,7 @@ internal sealed class FileTransaction : IAsyncDisposable
                 }
                 else if (entry.Conflict)
                 {
-                    result = new FileRecovery(entry.Path, RecoveryStatus.Conflict, entry.Message ?? "文件存在外部修改，未自动撤回。");
+                    result = new FileRecovery(entry.Path, RecoveryStatus.Conflict, entry.LocalizedMessage ?? entry.Message ?? M(TextKey.M005));
                 }
                 else if (currentHash == entry.OwnedHash
                          || (trustUnrecorded && windowOpen && (validator is null || validator(entry.Path, original, current))))
@@ -225,15 +229,16 @@ internal sealed class FileTransaction : IAsyncDisposable
                 else
                 {
                     result = new FileRecovery(entry.Path, RecoveryStatus.Conflict,
-                        "文件在本次操作写入后又被修改，为避免覆盖他人改动未自动撤回。");
+                        M(TextKey.M006));
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                result = new FileRecovery(entry.Path, RecoveryStatus.Failed, ex.Message);
+                result = new FileRecovery(entry.Path, RecoveryStatus.Failed, UiMessage.FromException(ex));
             }
             entry.Status = result.Status.ToString();
-            entry.Message = result.Message;
+            entry.LocalizedMessage = result.Message;
+            entry.Message = result.Message?.ToString();
             results.Add(result);
         }
 

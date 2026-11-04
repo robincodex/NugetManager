@@ -1,27 +1,86 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text;
 
 namespace NugetManager.Presentation;
 
-internal enum TextKey
-{
-    Literal, LoadingWorkspace, ErrorDetail, AppTitle, System, Light, Dark, Installed, Browse,
-    OpenDirectory, Refresh, Cancel, Prerelease, AllSources, SelectedSources, NoSources, SelectSources,
-    OpenNuGet, OpenGitHub, CheckingUpdates, Ready, PreferencesReadFailed, PreferencesWriteFailed,
-}
+internal sealed record UiArgument(string? Literal, UiMessage? Message);
 
 internal sealed record UiMessage
 {
     public TextKey Key { get; }
-    public IReadOnlyList<string> Arguments { get; }
+    public IReadOnlyList<UiArgument> Arguments { get; }
 
-    public UiMessage(TextKey key, params string[] arguments)
+    [JsonConstructor]
+    public UiMessage(TextKey key, IReadOnlyList<UiArgument> arguments)
     {
+        if (!Enum.IsDefined(key) || arguments is null || arguments.Any(a => a is null || (a.Literal is null) == (a.Message is null))
+            || (key == TextKey.Join ? arguments.Count == 0
+                : arguments.Count < CompositeFormat.Parse(AppLocalization.Template(key, UiLanguage.English)).MinimumArgumentCount))
+            throw UiErrors.Json(new UiMessage(TextKey.InvalidLocalizedMessage));
         Key = key;
-        Arguments = Array.AsReadOnly((string[])arguments.Clone());
+        Arguments = Array.AsReadOnly(arguments.ToArray());
     }
+
+    public UiMessage(TextKey key, params string[] arguments) : this(key,
+        Array.AsReadOnly(arguments.Select(a => new UiArgument(a, null)).ToArray()))
+    {
+    }
+
+    public static implicit operator UiMessage(string text) => new(TextKey.Literal, text);
+    public override string ToString() => AppLocalization.Format(this, UiLanguage.SimplifiedChinese, CultureInfo.InvariantCulture);
+
+    public static UiMessage FromException(Exception exception) => exception is IUiException localized ? localized.UiMessage
+        : exception.Data["NugetManager.UiMessage"] is UiMessage message ? message : exception.Message;
+
+    public static UiMessage FromFormat(TextKey key, FormattableString format)
+    {
+        var args = format.GetArguments().Select((argument, index) =>
+        {
+            if (argument is UiMessage message) return new UiArgument(null, message);
+            var spec = Regex.Match(format.Format, @"\{" + index + @"(?:,[^}:]+)?(?::([^}]+))?\}").Groups[1].Value;
+            return new UiArgument(argument is IFormattable value ? value.ToString(spec.Length == 0 ? null : spec, CultureInfo.InvariantCulture)
+                : argument?.ToString() ?? "", null);
+        }).ToArray();
+        return new(key, Array.AsReadOnly(args));
+    }
+
+    public static UiMessage Join(string separator, IEnumerable<UiMessage> messages) =>
+        new(TextKey.Join, Array.AsReadOnly(new[] { new UiArgument(separator, null) }
+            .Concat(messages.Select(m => new UiArgument(null, m))).ToArray()));
+    public static UiMessage operator +(UiMessage left, UiMessage right) => Join("", [left, right]);
 }
 
-internal static class AppLocalization
+internal interface IUiException
+{
+    UiMessage UiMessage { get; }
+}
+
+internal static class UiErrors
+{
+    private static T WithMessage<T>(T exception, UiMessage message) where T : Exception
+    {
+        exception.Data["NugetManager.UiMessage"] = message;
+        return exception;
+    }
+    public static InvalidOperationException InvalidOperation(UiMessage message) => WithMessage(new InvalidOperationException(message.ToString()), message);
+    public static ArgumentException Argument(UiMessage message, string? parameter = null) => WithMessage(new ArgumentException(message.ToString(), parameter), message);
+    public static InvalidDataException InvalidData(UiMessage message) => WithMessage(new InvalidDataException(message.ToString()), message);
+    public static IOException IO(UiMessage message) => WithMessage(new IOException(message.ToString()), message);
+    public static JsonException Json(UiMessage message) => WithMessage(new JsonException(message.ToString()), message);
+    public static OperationCanceledException OperationCanceled(UiMessage message, CancellationToken ct) =>
+        WithMessage(new OperationCanceledException(message.ToString(), ct), message);
+}
+
+internal static class Messages
+{
+    public static UiMessage M(TextKey key) => new(key);
+    public static UiMessage MF(TextKey key, FormattableString format) => UiMessage.FromFormat(key, format);
+}
+
+internal static partial class AppLocalization
 {
     private static readonly IReadOnlyDictionary<TextKey, string[]> Resources = new Dictionary<TextKey, string[]>
     {
@@ -48,6 +107,9 @@ internal static class AppLocalization
         [TextKey.Ready] = ["就绪", "Ready", "준비됨", "Готово"],
         [TextKey.PreferencesReadFailed] = ["无法读取偏好设置，已使用系统默认：{0}", "Cannot read preferences; using system defaults: {0}", "설정을 읽을 수 없어 시스템 기본값을 사용합니다: {0}", "Не удалось прочитать настройки; используются системные: {0}"],
         [TextKey.PreferencesWriteFailed] = ["偏好设置未保存：{0}", "Preferences were not saved: {0}", "설정이 저장되지 않았습니다: {0}", "Настройки не сохранены: {0}"],
+        [TextKey.InvalidLocalizedMessage] = ["本地化消息记录无效。", "Invalid localized message record.", "현지화 메시지 기록이 올바르지 않습니다.", "Некорректная запись локализованного сообщения."],
+        [TextKey.InvalidWebLink] = ["只能打开不含凭据的 HTTP(S) 绝对链接。", "Only absolute HTTP(S) links without credentials can be opened.", "자격 증명이 없는 HTTP(S) 절대 링크만 열 수 있습니다.", "Можно открывать только абсолютные HTTP(S)-ссылки без учётных данных."],
+        [TextKey.BrowserDidNotStart] = ["系统浏览器未启动。", "The system browser did not start.", "시스템 브라우저가 시작되지 않았습니다.", "Системный браузер не запустился."],
     };
 
     public static UiLanguage ResolveLanguage(UiLanguage language, CultureInfo culture) => language != UiLanguage.System ? language
@@ -60,13 +122,17 @@ internal static class AppLocalization
         };
 
     public static string Template(TextKey key, UiLanguage language) =>
-        Resources[key][language switch
+        (Resources.TryGetValue(key, out var resource) ? resource : ExtraResources[key])[language switch
         {
             UiLanguage.SimplifiedChinese => 0, UiLanguage.English => 1,
             UiLanguage.Korean => 2, UiLanguage.Russian => 3,
             _ => throw new ArgumentOutOfRangeException(nameof(language)),
         }];
 
-    public static string Format(UiMessage message, UiLanguage language, CultureInfo culture) =>
-        string.Format(culture, Template(message.Key, ResolveLanguage(language, culture)), message.Arguments.Cast<object>().ToArray());
+    public static string Format(UiMessage message, UiLanguage language, CultureInfo culture)
+    {
+        string Argument(UiArgument a) => a.Message is { } nested ? Format(nested, language, culture) : a.Literal ?? "";
+        return message.Key == TextKey.Join ? string.Join(message.Arguments[0].Literal, message.Arguments.Skip(1).Select(Argument))
+            : string.Format(culture, Template(message.Key, ResolveLanguage(language, culture)), message.Arguments.Select(Argument).Cast<object>().ToArray());
+    }
 }

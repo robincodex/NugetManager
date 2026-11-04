@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.IO.Compression;
 using System.Net;
 using System.Text.Json;
@@ -29,11 +31,11 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
     {
         if (!IdPattern().IsMatch(packageId) || packageId.Contains("..", StringComparison.Ordinal))
         {
-            throw new ArgumentException($"无效的包 ID：{packageId}", nameof(packageId));
+            throw UiErrors.Argument(MF(TextKey.M048, $"无效的包 ID：{packageId}"), nameof(packageId));
         }
         if (!VersionPattern().IsMatch(version))
         {
-            throw new ArgumentException($"无效的版本：{version}", nameof(version));
+            throw UiErrors.Argument(MF(TextKey.M049, $"无效的版本：{version}"), nameof(version));
         }
 
         var settings = NuGetConfigReader.Load(workspace.Directory, userConfigPath);
@@ -63,7 +65,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             }
             catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
             {
-                diagnostics.Add(new SourceDiagnostic(sourceName!, "CacheSourceUnknown", $"无法确认缓存来源：{ex.Message}"));
+                diagnostics.Add(new SourceDiagnostic(sourceName!, "CacheSourceUnknown", MF(TextKey.M050, $"无法确认缓存来源：{UiMessage.FromException(ex)}")));
             }
         }
         if (cacheAllowed && File.Exists(cachedNuspec))
@@ -73,7 +75,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
                 .Where(d => Path.GetFileName(d) is "lib" or "ref")
                 .SelectMany(Directory.EnumerateDirectories)
                 .Select(d => Path.GetFileName(d)!));
-            var cached = Parse(packageId, version, stream, frameworks, "全局包缓存", "", diagnostics);
+            var cached = Parse(packageId, version, stream, frameworks, M(TextKey.M051), "", diagnostics);
             if (cached is not null)
             {
                 return cached with { SourceName = cachedOrigin?.Name, SourceLocation = cachedOrigin?.Location };
@@ -87,7 +89,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             if (selected.Count == 0)
             {
                 diagnostics.Add(new SourceDiagnostic(sourceName, "SourceNotAllowed",
-                    $"包源 {sourceName} 未启用，或包源映射不允许从该源获取 {packageId}。"));
+                    MF(TextKey.M052, $"包源 {sourceName} 未启用，或包源映射不允许从该源获取 {packageId}。")));
             }
             candidates = selected;
         }
@@ -106,7 +108,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
 
         if (!diagnostics.Any(d => d.Code is "AuthRequired" or "InvalidMetadata"))
         {
-            diagnostics.Add(new SourceDiagnostic(sourceName ?? "", "NotFound", $"在缓存和可用包源中未找到 {packageId} {version} 的元数据。"));
+            diagnostics.Add(new SourceDiagnostic(sourceName ?? "", "NotFound", MF(TextKey.M053, $"在缓存和可用包源中未找到 {packageId} {version} 的元数据。")));
         }
         return Empty(packageId, version, diagnostics);
     }
@@ -116,7 +118,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
     {
         if (!Directory.Exists(source.Location))
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceUnavailable", $"本地包源不存在：{source.Location}"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceUnavailable", MF(TextKey.M054, $"本地包源不存在：{source.Location}")));
             return null;
         }
         string[] paths =
@@ -137,7 +139,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
                 && e.FullName.EndsWith(".nuspec", StringComparison.OrdinalIgnoreCase));
             if (nuspec is null)
             {
-                diagnostics.Add(new SourceDiagnostic(source.Name, "InvalidMetadata", $"{Path.GetFileName(path)} 中没有 nuspec 清单。"));
+                diagnostics.Add(new SourceDiagnostic(source.Name, "InvalidMetadata", MF(TextKey.M055, $"{Path.GetFileName(path)} 中没有 nuspec 清单。")));
                 return null;
             }
             var frameworks = FrameworkFolders(zip.Entries
@@ -145,11 +147,11 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
                 .Where(parts => parts.Length >= 3 && parts[0] is "lib" or "ref")
                 .Select(parts => parts[1]));
             using var stream = nuspec.Open();
-            return Parse(id, version, stream, frameworks, $"本地包源 {source.Name}", source.Name, diagnostics);
+            return Parse(id, version, stream, frameworks, MF(TextKey.M056, $"本地包源 {source.Name}"), source.Name, diagnostics);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "InvalidMetadata", $"无法读取 {Path.GetFileName(path)}：{ex.Message}"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "InvalidMetadata", MF(TextKey.M057, $"无法读取 {Path.GetFileName(path)}：{UiMessage.FromException(ex)}")));
             return null;
         }
     }
@@ -160,7 +162,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
         if (source.HasCredentials)
         {
             diagnostics.Add(new SourceDiagnostic(source.Name, "AuthRequired",
-                $"包源 {source.Name} 需要认证，且本地缓存中没有该版本；请先还原或在 IDE 中查看详情。"));
+                MF(TextKey.M058, $"包源 {source.Name} 需要认证，且本地缓存中没有该版本；请先还原或在 IDE 中查看详情。")));
             return null;
         }
         try
@@ -173,7 +175,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             using var response = await http.GetAsync(new Uri($"{baseAddress.TrimEnd('/')}/{idLower}/{versionLower}/{idLower}.nuspec"), ct).ConfigureAwait(false);
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
-                diagnostics.Add(new SourceDiagnostic(source.Name, "AuthRequired", $"包源 {source.Name} 拒绝访问（{(int)response.StatusCode}），需要认证。"));
+                diagnostics.Add(new SourceDiagnostic(source.Name, "AuthRequired", MF(TextKey.M059, $"包源 {source.Name} 拒绝访问（{(int)response.StatusCode}），需要认证。")));
                 return null;
             }
             if (response.StatusCode == HttpStatusCode.NotFound)
@@ -182,20 +184,20 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             }
             if (!response.IsSuccessStatusCode)
             {
-                diagnostics.Add(new SourceDiagnostic(source.Name, "SourceError", $"包源 {source.Name} 返回 {(int)response.StatusCode}。"));
+                diagnostics.Add(new SourceDiagnostic(source.Name, "SourceError", MF(TextKey.M060, $"包源 {source.Name} 返回 {(int)response.StatusCode}。")));
                 return null;
             }
             await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            return Parse(id, version, stream, [], $"包源 {source.Name}", source.Name, diagnostics);
+            return Parse(id, version, stream, [], MF(TextKey.M061, $"包源 {source.Name}"), source.Name, diagnostics);
         }
         catch (HttpRequestException ex)
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceUnavailable", $"无法连接包源 {source.Name}：{SdkClient.Redact(ex.Message)}"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceUnavailable", MF(TextKey.M062, $"无法连接包源 {source.Name}：{SdkClient.Redact(ex.Message)}")));
             return null;
         }
         catch (TaskCanceledException) when (!ct.IsCancellationRequested)
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceUnavailable", $"连接包源 {source.Name} 超时。"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceUnavailable", MF(TextKey.M063, $"连接包源 {source.Name} 超时。")));
             return null;
         }
     }
@@ -211,18 +213,18 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
         }
         if (!source.Location.EndsWith("index.json", StringComparison.OrdinalIgnoreCase))
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "UnsupportedSource", $"包源 {source.Name} 不是 NuGet V3 源，无法读取详情。"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "UnsupportedSource", MF(TextKey.M064, $"包源 {source.Name} 不是 NuGet V3 源，无法读取详情。")));
             return null;
         }
         using var response = await http.GetAsync(new Uri(source.Location), ct).ConfigureAwait(false);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "AuthRequired", $"包源 {source.Name} 拒绝访问（{(int)response.StatusCode}），需要认证。"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "AuthRequired", MF(TextKey.M059, $"包源 {source.Name} 拒绝访问（{(int)response.StatusCode}），需要认证。")));
             return null;
         }
         if (!response.IsSuccessStatusCode)
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceError", $"包源 {source.Name} 服务索引返回 {(int)response.StatusCode}。"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "SourceError", MF(TextKey.M065, $"包源 {source.Name} 服务索引返回 {(int)response.StatusCode}。")));
             return null;
         }
         V3ServiceIndex? index;
@@ -238,7 +240,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
         var address = index?.Resources?.FirstOrDefault(r => TypeNames(r.Type).Any(t => t.StartsWith("PackageBaseAddress/3.0.0", StringComparison.Ordinal)))?.Id;
         if (address is null)
         {
-            diagnostics.Add(new SourceDiagnostic(source.Name, "UnsupportedSource", $"包源 {source.Name} 未提供 PackageBaseAddress 资源。"));
+            diagnostics.Add(new SourceDiagnostic(source.Name, "UnsupportedSource", MF(TextKey.M066, $"包源 {source.Name} 未提供 PackageBaseAddress 资源。")));
         }
         lock (_baseAddresses)
         {
@@ -254,7 +256,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
         _ => [],
     };
 
-    private static PackageDetails? Parse(string id, string version, Stream stream, IReadOnlyList<string> frameworks, string origin, string sourceName,
+    private static PackageDetails? Parse(string id, string version, Stream stream, IReadOnlyList<string> frameworks, UiMessage origin, string sourceName,
         List<SourceDiagnostic> diagnostics)
     {
         XDocument doc;
@@ -265,20 +267,20 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
         }
         catch (XmlException ex)
         {
-            diagnostics.Add(new SourceDiagnostic(sourceName, "InvalidMetadata", $"{id} {version} 的清单无效或包含不允许的 DTD：{ex.Message}"));
+            diagnostics.Add(new SourceDiagnostic(sourceName, "InvalidMetadata", MF(TextKey.M067, $"{id} {version} 的清单无效或包含不允许的 DTD：{UiMessage.FromException(ex)}")));
             return null;
         }
         var metadata = doc.Root?.Elements().FirstOrDefault(e => e.Name.LocalName == "metadata");
         if (metadata is null)
         {
-            diagnostics.Add(new SourceDiagnostic(sourceName, "InvalidMetadata", $"{id} {version} 的清单缺少 metadata。"));
+            diagnostics.Add(new SourceDiagnostic(sourceName, "InvalidMetadata", MF(TextKey.M068, $"{id} {version} 的清单缺少 metadata。")));
             return null;
         }
         string? Value(string name) => metadata.Elements().FirstOrDefault(e => e.Name.LocalName == name)?.Value.Trim() is { Length: > 0 } v ? v : null;
 
-        var license = metadata.Elements().FirstOrDefault(e => e.Name.LocalName == "license") is { } licenseElement
-            ? ((string?)licenseElement.Attribute("type") == "file" ? $"许可证文件：{licenseElement.Value.Trim()}" : licenseElement.Value.Trim())
-            : Value("licenseUrl");
+        UiMessage? license = metadata.Elements().FirstOrDefault(e => e.Name.LocalName == "license") is { } licenseElement
+            ? ((string?)licenseElement.Attribute("type") == "file" ? MF(TextKey.M069, $"许可证文件：{licenseElement.Value.Trim()}") : licenseElement.Value.Trim())
+            : Value("licenseUrl") is { } licenseUrl ? (UiMessage)licenseUrl : null;
         Uri? projectUrl = Value("projectUrl") is { } url && Uri.TryCreate(url, UriKind.Absolute, out var parsed)
             && (parsed.Scheme == Uri.UriSchemeHttps || parsed.Scheme == Uri.UriSchemeHttp) ? parsed : null;
         var repositoryValue = (string?)metadata.Elements().FirstOrDefault(e => e.Name.LocalName == "repository")?.Attribute("url");
@@ -290,19 +292,19 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             var groupElements = deps.Elements().Where(e => e.Name.LocalName == "group").ToList();
             foreach (var group in groupElements)
             {
-                groups.Add(new DependencyGroup(ShortFramework((string?)group.Attribute("targetFramework")) ?? "任意框架", Dependencies(group)));
+                groups.Add(new DependencyGroup(ShortFramework((string?)group.Attribute("targetFramework")) ?? "", Dependencies(group)));
             }
             if (groupElements.Count == 0 && deps.Elements().Any(e => e.Name.LocalName == "dependency"))
             {
-                groups.Add(new DependencyGroup("任意框架", Dependencies(deps)));
+                groups.Add(new DependencyGroup("", Dependencies(deps)));
             }
         }
         var allFrameworks = frameworks.Count > 0
             ? frameworks
-            : FrameworkFolders(groups.Select(g => g.Framework).Where(f => f != "任意框架"));
+            : FrameworkFolders(groups.Select(g => g.Framework).Where(f => f.Length > 0));
 
         return new PackageDetails(Value("id") ?? id, Value("version") ?? version, Value("authors"), Value("description"),
-            string.IsNullOrEmpty(license) ? null : license, projectUrl, allFrameworks, groups, diagnostics)
+            license, projectUrl, allFrameworks, groups, diagnostics)
         {
             Origin = origin,
             RepositoryUrl = repositoryUrl,
@@ -311,7 +313,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
 
     private static List<DependencyItem> Dependencies(XElement parent) =>
         parent.Elements().Where(e => e.Name.LocalName == "dependency")
-            .Select(e => new DependencyItem((string?)e.Attribute("id") ?? "", (string?)e.Attribute("version") ?? "任意版本"))
+            .Select(e => new DependencyItem((string?)e.Attribute("id") ?? "", (string?)e.Attribute("version") ?? "(,)"))
             .Where(d => d.PackageId.Length > 0)
             .ToList();
 

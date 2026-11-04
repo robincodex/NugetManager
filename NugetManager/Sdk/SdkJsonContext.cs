@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NugetManager.Presentation;
 
 namespace NugetManager.Sdk;
 
@@ -92,6 +93,7 @@ internal sealed class V3Resource
 
 internal sealed class RecoveryManifest
 {
+    public UiMessage? LocalizedDescription { get; set; }
     public string? OperationId { get; set; }
     public string? Description { get; set; }
     public string? Phase { get; set; }
@@ -101,6 +103,7 @@ internal sealed class RecoveryManifest
 
 internal sealed class RecoveryEntry
 {
+    public UiMessage? LocalizedMessage { get; set; }
     public string Path { get; set; } = "";
     public bool Existed { get; set; }
     public string? BackupFile { get; set; }

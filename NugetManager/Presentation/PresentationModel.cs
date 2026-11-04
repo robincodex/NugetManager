@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using NugetManager.Domain;
 using NugetManager.Operations;
 
@@ -18,50 +20,55 @@ internal enum GroupActionKind
 }
 
 /// <summary>A control that lives in a group header. <see cref="IsChecked"/> null means partially selected.</summary>
-internal sealed record GroupAction(GroupActionKind Kind, string Label, bool IsEnabled, bool? IsChecked);
+internal sealed record GroupAction(GroupActionKind Kind, UiMessage Label, bool IsEnabled, bool? IsChecked);
 
 internal sealed record PackageRowModel(
     string PackageId,
     string VersionText,
-    string ProjectsText,
+    UiMessage ProjectsText,
     PackageGroupKind Group,
     bool CanSelect,
     bool IsSelected,
     string DetailVersion);
 
-internal sealed record PackageGroupModel(PackageGroupKind Kind, string Title, IReadOnlyList<GroupAction> Actions, IReadOnlyList<PackageRowModel> Rows);
+internal sealed record PackageGroupModel(PackageGroupKind Kind, UiMessage Title, IReadOnlyList<GroupAction> Actions, IReadOnlyList<PackageRowModel> Rows);
 
-internal sealed record PackageListModel(IReadOnlyList<PackageGroupModel> Groups, string? Notice);
+internal sealed record PackageListModel(IReadOnlyList<PackageGroupModel> Groups, UiMessage? Notice);
 
 internal sealed record ProjectRowModel(
     string ProjectPath,
     string ProjectName,
-    string VersionText,
+    UiMessage VersionText,
     ProjectAction Action,
-    string? ActionLabel,
+    UiMessage? ActionLabel,
     bool ActionEnabled,
-    string? Note);
+    UiMessage? Note);
 
 internal sealed record ConfirmationModel(
-    string Title,
-    IReadOnlyList<string> Changes,
-    IReadOnlyList<string> AffectedProjects,
+    UiMessage Title,
+    IReadOnlyList<UiMessage> Changes,
+    IReadOnlyList<UiMessage> AffectedProjects,
     IReadOnlyList<string> Files,
-    IReadOnlyList<string> Warnings,
-    IReadOnlyList<string> Blockers,
+    IReadOnlyList<UiMessage> Warnings,
+    IReadOnlyList<UiMessage> Blockers,
     bool CanConfirm);
 
-internal sealed record ActivityModel(bool Workspace, bool Search, bool Details, bool Versions, bool SourceSelection);
+internal sealed record ActivityModel(bool Workspace, bool Search, bool Details, bool Versions, bool SourceSelection,
+    bool InstalledWorkspace, bool InstalledCheck);
 
 /// <summary>Pure projections from controller state to what the window shows; kept free of MewUI so they are unit-testable.</summary>
 internal static class PresentationModel
 {
     public static ActivityModel BuildActivity(WorkspaceViewState state, bool browseMode) =>
         new(state.IsBusy, browseMode && state.SearchLoading, state.SelectedPackageId is not null && state.DetailsLoading,
-            state.SelectedPackageId is not null && state.Versions is null, browseMode && state.Workspace is not null && !state.IsBusy);
+            state.VersionsLoading, browseMode && state.Workspace is not null && !state.IsBusy,
+            !browseMode && state.Workspace is null && state.Status == WorkspaceStatus.Loading,
+            !browseMode && state.Workspace is not null && state.IsBusy
+                && state.Status is WorkspaceStatus.Loading or WorkspaceStatus.Ready);
 
-    public static string BrowseGroupTitle(BrowseSourcePage group) =>
-        $"{group.Source.Name} · {(group.Kind == BrowseKind.Popular ? "热门" : "普通浏览")}（{group.Page.Items.Count}）";
+    public static UiMessage BrowseGroupTitle(BrowseSourcePage group) =>
+        UiMessage.Join("", [group.Source.Name, " · ", group.Kind == BrowseKind.Popular ? M(TextKey.M170) : M(TextKey.M171),
+            $"（{group.Page.Items.Count}）"]);
 
     public static PackageListModel BuildPackageList(WorkspaceViewState state)
     {
@@ -78,22 +85,22 @@ internal static class PresentationModel
                 CanSelect: true,
                 IsSelected: state.SelectedPackageIds.Contains(u.PackageId),
                 DetailVersion: u.ToVersion)).ToList();
-            groups.Add(new PackageGroupModel(PackageGroupKind.Upgrades, "可升级",
+            groups.Add(new PackageGroupModel(PackageGroupKind.Upgrades, M(TextKey.M172),
             [
-                new GroupAction(GroupActionKind.SelectAll, "全选", !state.IsBusy, allChecked),
-                new GroupAction(GroupActionKind.UpgradeSelected, selectedCount > 0 ? $"升级所选 ({selectedCount})" : "升级所选",
+                new GroupAction(GroupActionKind.SelectAll, M(TextKey.M173), !state.IsBusy, allChecked),
+                new GroupAction(GroupActionKind.UpgradeSelected, selectedCount > 0 ? MF(TextKey.M174, $"升级所选 ({selectedCount})") : M(TextKey.M175),
                     !state.IsBusy && selectedCount > 0, null),
             ], rows));
         }
 
-        AddOccurrenceGroup(groups, state, PackageGroupKind.Installed, "已安装", state.Installed);
-        AddOccurrenceGroup(groups, state, PackageGroupKind.Implicit, "隐式依赖", state.Implicit);
-        AddOccurrenceGroup(groups, state, PackageGroupKind.SdkImplicit, "SDK 自动引用", state.SdkImplicit);
+        AddOccurrenceGroup(groups, state, PackageGroupKind.Installed, M(TextKey.Installed), state.Installed);
+        AddOccurrenceGroup(groups, state, PackageGroupKind.Implicit, M(TextKey.M177), state.Implicit);
+        AddOccurrenceGroup(groups, state, PackageGroupKind.SdkImplicit, M(TextKey.M178), state.SdkImplicit);
 
-        string? notice = state.Workspace is null ? null
-            : state.Status == WorkspaceStatus.Loading ? "正在检测…"
-            : !state.UpdatesComplete ? "更新检测未完成，部分包可能有可用更新。"
-            : state.Upgrades.Count == 0 ? "所有直接引用均为最新版本。"
+        UiMessage? notice = state.Workspace is null ? null
+            : state.Status == WorkspaceStatus.Loading ? M(TextKey.M179)
+            : !state.UpdatesComplete ? M(TextKey.M180)
+            : state.Upgrades.Count == 0 ? M(TextKey.M181)
             : null;
         return new PackageListModel(groups, notice);
     }
@@ -103,8 +110,8 @@ internal static class PresentationModel
         {
             var label = p.Action switch
             {
-                ProjectAction.Install => "安装",
-                ProjectAction.Uninstall => "卸载",
+                ProjectAction.Install => M(TextKey.M182),
+                ProjectAction.Uninstall => M(TextKey.M035),
                 _ => null,
             };
             var enabled = label is not null && p.BlockReason is null && !state.IsBusy
@@ -116,25 +123,25 @@ internal static class PresentationModel
     {
         var changes = plan.Changes.Select(c => c.Action switch
         {
-            PackageAction.Upgrade => $"升级 {c.PackageId} 到 {c.Version}（{ProjectName(c.ProjectPath)}）",
-            PackageAction.Install => $"安装 {c.PackageId} {c.Version}（{ProjectName(c.ProjectPath)}）",
-            _ => $"卸载 {c.PackageId}（{ProjectName(c.ProjectPath)}）",
+            PackageAction.Upgrade => MF(TextKey.M183, $"升级 {c.PackageId} 到 {c.Version}（{ProjectName(c.ProjectPath)}）"),
+            PackageAction.Install => MF(TextKey.M184, $"安装 {c.PackageId} {c.Version}（{ProjectName(c.ProjectPath)}）"),
+            _ => MF(TextKey.M185, $"卸载 {c.PackageId}（{ProjectName(c.ProjectPath)}）"),
         }).ToList();
         var affected = plan.AffectedProjects
-            .Select(p => scope.Includes(p.Path) ? p.Name : $"{p.Name}（当前范围外，也会受影响）")
+            .Select(p => scope.Includes(p.Path) ? p.Name : MF(TextKey.M186, $"{p.Name}（当前范围外，也会受影响）"))
             .ToList();
         var title = plan.Changes.Select(c => c.Action).Distinct().Count() == 1
             ? plan.Changes[0].Action switch
             {
-                PackageAction.Upgrade => $"确认升级 {plan.Changes.Select(c => c.PackageId).Distinct(StringComparer.OrdinalIgnoreCase).Count()} 个包",
-                PackageAction.Install => "确认安装",
-                _ => "确认卸载",
+                PackageAction.Upgrade => MF(TextKey.M187, $"确认升级 {plan.Changes.Select(c => c.PackageId).Distinct(StringComparer.OrdinalIgnoreCase).Count()} 个包"),
+                PackageAction.Install => M(TextKey.M188),
+                _ => M(TextKey.M189),
             }
-            : "确认更改";
+            : M(TextKey.M190);
         return new ConfirmationModel(title, changes, affected, plan.Files, plan.Warnings, plan.Blockers, plan.CanExecute);
     }
 
-    private static void AddOccurrenceGroup(List<PackageGroupModel> groups, WorkspaceViewState state, PackageGroupKind kind, string title,
+    private static void AddOccurrenceGroup(List<PackageGroupModel> groups, WorkspaceViewState state, PackageGroupKind kind, UiMessage title,
         IReadOnlyList<PackageOccurrence> occurrences)
     {
         if (occurrences.Count == 0)
@@ -155,35 +162,35 @@ internal static class PresentationModel
         groups.Add(new PackageGroupModel(kind, title, [], rows));
     }
 
-    private static string ProjectsText(IEnumerable<string> projectPaths, WorkspaceViewState state)
+    private static UiMessage ProjectsText(IEnumerable<string> projectPaths, WorkspaceViewState state)
     {
         var distinct = projectPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (distinct.Count == 1)
         {
             return state.Workspace?.Projects.FirstOrDefault(p => PathUtil.AreEqual(p.Path, distinct[0]))?.Name ?? ProjectName(distinct[0]);
         }
-        return $"{distinct.Count} 个项目";
+        return MF(TextKey.M191, $"{distinct.Count} 个项目");
     }
 
-    private static string VersionText(IReadOnlyList<PackageOccurrence> occurrences)
+    private static UiMessage VersionText(IReadOnlyList<PackageOccurrence> occurrences)
     {
         if (occurrences.Count == 0)
         {
-            return "未安装";
+            return M(TextKey.M192);
         }
         var showFramework = occurrences.Select(o => o.Framework).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1
             || occurrences.Any(o => o.Kind != ReferenceKind.Direct);
-        return string.Join("；", occurrences.Select(o =>
+        return UiMessage.Join("; ", occurrences.Select(o =>
         {
             var text = o.Kind switch
             {
                 ReferenceKind.Direct => o.RequestedVersion is { } requested && requested != o.ResolvedVersion
-                    ? $"{requested}（解析为 {o.ResolvedVersion}）"
+                    ? MF(TextKey.M193, $"{requested}（解析为 {o.ResolvedVersion}）")
                     : o.ResolvedVersion,
-                ReferenceKind.Transitive => $"{o.ResolvedVersion}（隐式）",
-                _ => $"{o.ResolvedVersion}（SDK 自动引用）",
+                ReferenceKind.Transitive => MF(TextKey.M194, $"{o.ResolvedVersion}（隐式）"),
+                _ => MF(TextKey.M195, $"{o.ResolvedVersion}（SDK 自动引用）"),
             };
-            return showFramework ? $"{o.Framework}: {text}" : text;
+            return showFramework ? UiMessage.Join("", [o.Framework, ": ", text]) : text;
         }));
     }
 

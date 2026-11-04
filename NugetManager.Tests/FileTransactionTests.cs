@@ -195,7 +195,7 @@ public class FileTransactionTests
 
         var failed = Assert.Single(recovery);
         Assert.Equal(RecoveryStatus.Failed, failed.Status);
-        Assert.False(string.IsNullOrEmpty(failed.Message));
+        Assert.False(string.IsNullOrEmpty(TestMessages.Zh(failed.Message)));
         Assert.Contains(tx.ManifestPath, await FileTransaction.FindIncompleteAsync(RecoveryDir(ws), CancellationToken.None));
     }
 

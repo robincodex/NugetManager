@@ -1,5 +1,6 @@
 using Aprillz.MewUI;
 using Aprillz.MewUI.Controls;
+using System.Globalization;
 using NugetManager.Domain;
 using NugetManager.Operations;
 
@@ -11,15 +12,30 @@ namespace NugetManager.Presentation;
 /// </summary>
 internal sealed class MainWindow : Window
 {
-    private static readonly Color SelectedRowColor = Color.FromRgb(0xE3, 0xEE, 0xFB);
-    private static readonly Color HeaderRowColor = Color.FromRgb(0xF3, 0xF3, 0xF3);
-    private static readonly Color PaneColor = Color.FromRgb(0xFA, 0xFA, 0xFA);
-    private static readonly Color BorderColor = Color.FromRgb(0xDD, 0xDD, 0xDD);
-    private static readonly Color AccentColor = Color.FromRgb(0x1F, 0x6F, 0xD1);
+    private static Color SelectedRowColor => AppTheme.Current.Selected;
+    private static Color HeaderRowColor => AppTheme.Current.Header;
+    private static Color PaneColor => AppTheme.Current.Pane;
+    private static Color BorderColor => AppTheme.Current.Border;
+    private static Color AccentColor => AppTheme.Current.Accent;
 
     private readonly WorkspaceController _controller;
     private readonly string? _initialDirectory;
     private readonly string? _recoveryDirectory;
+    private AppPreferences _preferences;
+    private readonly AppPreferenceStore? _preferenceStore;
+    private readonly CultureInfo _systemCulture = CultureInfo.CurrentUICulture;
+    private readonly ComboBox _themePicker = new();
+    private readonly ComboBox _languagePicker = new();
+    private readonly SegmentedControl _tabs = new();
+    private readonly Popup _sourcePopup = new();
+    private readonly PackageLinkMenu _links;
+    private readonly List<(Border Border, Func<Color> Color)> _surfaces = [];
+    private readonly TextBlock _scopeTitle = new();
+    private readonly TextBlock _sourceTitle = new();
+    private bool _savingPreferences;
+    private ContextMenu? _openMenu;
+    private static readonly Command OpenNuGetCommand = new("package.openNuGet", "Open NuGet");
+    private static readonly Command OpenGitHubCommand = new("package.openGitHub", "Open GitHub");
     private readonly object _pendingGate = new();
     private WorkspaceViewState? _pending;
     private bool _renderScheduled;
@@ -31,8 +47,6 @@ internal sealed class MainWindow : Window
     private readonly StackPanel _middle = new StackPanel().Vertical();
     private readonly StackPanel _details = new StackPanel().Vertical().Spacing(8);
     private readonly TextBox _searchBox = new();
-    private readonly Button _installedTab = new();
-    private readonly Button _browseTab = new();
     private readonly Button _openButton = new();
     private readonly Button _refreshButton = new();
     private readonly Button _cancelButton = new();
@@ -40,12 +54,12 @@ internal sealed class MainWindow : Window
     private readonly TextBlock _statusText = new();
     private readonly TextBlock _progressText = new();
     private readonly TextBlock _errorText = new();
-    private readonly ComboBox _sourcePicker = new();
+    private readonly Button _sourcePicker = new();
     private readonly ProgressRing _statusRing = new();
     private readonly ProgressRing _searchRing = new();
     private readonly ProgressRing _detailsRing = new();
     private readonly ProgressRing _versionsRing = new();
-    private object? _sourcesKey;
+    private readonly ProgressRing _installedRing = new();
 
     private bool _browseMode;
     private bool _suppressEvents;
@@ -62,12 +76,19 @@ internal sealed class MainWindow : Window
         _controller = controller;
         _initialDirectory = initialDirectory;
         _recoveryDirectory = recoveryDirectory;
+        _preferences = preferences ?? new();
+        _preferenceStore = preferenceStore;
+        _links = controller.CreateLinkMenu(new ExternalLinkOpener());
+        Commands.Register<Uri>(OpenNuGetCommand, uri => Fire(() => _links.OpenAsync(uri)));
+        Commands.Register<Uri>(OpenGitHubCommand, uri => Fire(() => _links.OpenAsync(uri)));
         _state = controller.State;
-        this.Title("NuGet 包管理器").Resizable(1280, 800, minWidth: 980, minHeight: 560);
-        Content = BuildLayout();
+        this.Title(L(TextKey.AppTitle)).Resizable(1280, 800, minWidth: 980, minHeight: 560);
         _controller.StateChanged += OnStateChanged;
         this.OnLoaded(() =>
         {
+            Application.Current.SetThemeMode(ThemeVariantFor(_preferences.Theme));
+            Content = BuildLayout();
+            Application.Current.ThemeChanged += HandleThemeChanged;
             Render(_controller.State);
             Fire(async () =>
             {
@@ -85,6 +106,9 @@ internal sealed class MainWindow : Window
         this.OnClosed(() =>
         {
             _controller.StateChanged -= OnStateChanged;
+            Application.Current.ThemeChanged -= HandleThemeChanged;
+            _sourcePopup.Close();
+            _links.Dispose();
             _busyCts?.Cancel();
             _searchCts?.Cancel();
             _detailsCts?.Cancel();
@@ -92,12 +116,147 @@ internal sealed class MainWindow : Window
             _searchRing.IsActive = false;
             _detailsRing.IsActive = false;
             _versionsRing.IsActive = false;
+            _installedRing.IsActive = false;
         });
     }
 
-    public static Window Create(WorkspaceController controller, string? initialDirectory = null, string? recoveryDirectory = null,
+    public UiLanguage Language => _preferences.Language;
+
+    public static MainWindow Create(WorkspaceController controller, string? initialDirectory = null, string? recoveryDirectory = null,
         AppPreferences? preferences = null, AppPreferenceStore? preferenceStore = null) =>
         new MainWindow(controller, initialDirectory, recoveryDirectory, preferences, preferenceStore);
+
+    private string L(TextKey key, params string[] arguments) =>
+        AppLocalization.Format(new UiMessage(key, arguments), _preferences.Language, _systemCulture);
+    private string F(UiMessage? message) => message is null ? "" : AppLocalization.Format(message, _preferences.Language, _systemCulture);
+    private string LF(TextKey key, FormattableString format) => F(UiMessage.FromFormat(key, format));
+    private OperationDialog Dialogs => new(_preferences.Language, _systemCulture);
+
+    private static ThemeVariant ThemeVariantFor(UiTheme theme) => theme switch
+    {
+        UiTheme.Light => ThemeVariant.Light, UiTheme.Dark => ThemeVariant.Dark, _ => ThemeVariant.System,
+    };
+
+    private async Task ChangePreferencesAsync(AppPreferences preferences)
+    {
+        _savingPreferences = true;
+        Render(_state);
+        try
+        {
+            if (_preferenceStore is not null) await _preferenceStore.SaveAsync(preferences, CancellationToken.None);
+            await OnUiAsync(() =>
+            {
+                _preferences = preferences;
+                Application.Current.SetThemeMode(ThemeVariantFor(preferences.Theme));
+                InvalidatePresentation();
+                return Task.FromResult(true);
+            });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            await OnUiAsync(async () =>
+            {
+                await MessageBox.NotifyAsync(L(TextKey.PreferencesWriteFailed, ex.Message), PromptIconKind.Error, null, this);
+                return true;
+            });
+        }
+        finally
+        {
+            _savingPreferences = false;
+            OnStateChanged(_state);
+        }
+    }
+
+    private void HandleThemeChanged(Theme previous, Theme current) => InvalidatePresentation();
+
+    private void InvalidatePresentation()
+    {
+        _projectsKey = _middleKey = _detailsKey = null;
+        _sourcePopup.Close();
+        _links.Close();
+        Render(_state);
+    }
+
+    private void ShowSourcePicker()
+    {
+        if (!_sourcePicker.IsEnabled) return;
+        if (_sourcePopup.IsOpen) { _sourcePopup.Close(); return; }
+        var choices = new StackPanel().Vertical().Spacing(6).MinWidth(230);
+        var selected = _state.SelectedSources.Resolve(_state.Sources);
+        var all = new CheckBox().Content(L(TextKey.AllSources)).IsChecked(
+            selected.Count == 0 ? false : selected.Count == _state.Sources.Count ? true : null);
+        choices.Add(all);
+        var checks = new List<(string Name, CheckBox Check)>();
+        var syncing = false;
+        foreach (var source in _state.Sources)
+        {
+            var check = new CheckBox().Content(source.Name).IsChecked(selected.Contains(source.Name, StringComparer.OrdinalIgnoreCase));
+            checks.Add((source.Name, check));
+            choices.Add(check);
+            check.OnCheckedChanged(value =>
+            {
+                if (syncing) return;
+                var names = checks.Where(c => c.Check.IsChecked == true).Select(c => c.Name).ToArray();
+                syncing = true;
+                all.IsChecked = names.Length == 0 ? false : names.Length == checks.Count ? true : null;
+                syncing = false;
+                ChangeSources(SourceSelection.Subset(names));
+            });
+        }
+        all.OnCheckedChanged(value =>
+        {
+            if (syncing) return;
+            syncing = true;
+            foreach (var (_, check) in checks) check.IsChecked = value == true;
+            syncing = false;
+            ChangeSources(value == true ? SourceSelection.All : SourceSelection.Subset([]));
+        });
+        _sourcePopup.Content = new Border().Background(PaneColor).BorderBrush(BorderColor).BorderThickness(new Thickness(1))
+            .Padding(12).Child(new ScrollViewer().MaxHeight(360).VerticalScroll(ScrollMode.Auto).Content(choices));
+        _sourcePopup.ShowAt(_sourcePicker, _sourcePicker.Bounds, PopupAnchorSide.Below);
+    }
+
+    private void ChangeSources(SourceSelection selection)
+    {
+        _searchCts?.Cancel();
+        _detailsCts?.Cancel();
+        _links.Close();
+        var query = _searchBox.Text?.Trim() ?? "";
+        Fire(() => _controller.SelectSourcesAsync(selection, CancellationToken.None, query));
+    }
+
+    private void PackagePointer(MouseEventArgs e, string id, string version, string? source)
+    {
+        if (e.Button == MouseButton.Left) { SelectPackage(id, version, source); return; }
+        if (e.Button != MouseButton.Right || _state.Workspace is not { } workspace) return;
+        e.Handled = true;
+        var identity = new PackageLinkIdentity(workspace.Directory, id, version, source);
+        var menu = _openMenu = new ContextMenu();
+        var nuget = new MenuItem(L(TextKey.OpenNuGet), OpenNuGetCommand) { IsEnabled = false };
+        var github = new MenuItem(L(TextKey.OpenGitHub), OpenGitHubCommand) { IsEnabled = false };
+        menu.SetItems(nuget, github);
+        menu.Show(this, e.GetPosition(this));
+        Fire(async () =>
+        {
+            await _links.LoadAsync(workspace, identity, CancellationToken.None);
+            await OnUiAsync(async () =>
+            {
+                if (!ReferenceEquals(_openMenu, menu) || _links.State.Identity != identity || menu.Parent is null)
+                {
+                    if (ReferenceEquals(_openMenu, menu)) _links.Close();
+                    return true;
+                }
+                var links = _links.State.Links;
+                nuget.CommandData = links.NuGetPage;
+                github.CommandData = links.GitHubRepository;
+                nuget.IsEnabled = links.NuGetPage is not null;
+                github.IsEnabled = links.GitHubRepository is not null;
+                if (_links.State.Error is { } error)
+                    await MessageBox.NotifyAsync(L(TextKey.ErrorDetail, F(error)), PromptIconKind.Warning, null, this);
+                return true;
+            });
+        });
+    }
 
     /// <summary>Offers recovery for operations that did not finish last time. Files change only on an explicit choice.</summary>
     private async Task CheckRecoveryAsync()
@@ -115,7 +274,7 @@ internal sealed class MainWindow : Window
         {
             await OnUiAsync(async () =>
             {
-                await MessageBox.NotifyAsync("无法检查未完成的操作", PromptIconKind.Warning, $"{_recoveryDirectory}{Environment.NewLine}{ex.Message}", this);
+                await MessageBox.NotifyAsync(L(TextKey.M075), PromptIconKind.Warning, $"{_recoveryDirectory}{Environment.NewLine}{UiMessage.FromException(ex)}", this);
                 return true;
             });
             return;
@@ -123,7 +282,7 @@ internal sealed class MainWindow : Window
 
         foreach (var item in pending)
         {
-            var choice = await OnUiAsync(() => OperationDialog.ShowRecoveryAsync(this, item));
+            var choice = await OnUiAsync(() => Dialogs.ShowRecoveryAsync(this, item));
             try
             {
                 if (choice == RecoveryChoice.Recover)
@@ -131,14 +290,14 @@ internal sealed class MainWindow : Window
                     var results = await RecoveryCoordinator.RecoverAsync(item, CancellationToken.None);
                     await OnUiAsync(async () =>
                     {
-                        await OperationDialog.ShowRecoveryResultAsync(this, item, results);
+                        await Dialogs.ShowRecoveryResultAsync(this, item, results);
                         return true;
                     });
                 }
                 else if (choice == RecoveryChoice.Discard)
                 {
-                    var confirmed = await OnUiAsync(() => MessageBox.ConfirmAsync("保留当前文件并删除这条备份记录？", PromptIconKind.Warning,
-                        "删除后将不能再用该备份撤回这次操作。备份目录：" + item.BackupDirectory, this));
+                    var confirmed = await OnUiAsync(() => MessageBox.ConfirmAsync(L(TextKey.M076), PromptIconKind.Warning,
+                        L(TextKey.M077) + item.BackupDirectory, this));
                     if (confirmed)
                     {
                         await RecoveryCoordinator.DiscardAsync(item, CancellationToken.None);
@@ -149,8 +308,8 @@ internal sealed class MainWindow : Window
             {
                 await OnUiAsync(async () =>
                 {
-                    await MessageBox.NotifyAsync("恢复未完成，文件保持现状", PromptIconKind.Error,
-                        $"{ex.Message}{Environment.NewLine}备份目录：{item.BackupDirectory}", this);
+                    await MessageBox.NotifyAsync(L(TextKey.M078), PromptIconKind.Error,
+                        LF(TextKey.M079, $"{UiMessage.FromException(ex)}{Environment.NewLine}备份目录：{item.BackupDirectory}"), this);
                     return true;
                 });
             }
@@ -159,10 +318,11 @@ internal sealed class MainWindow : Window
 
     private Element BuildLayout()
     {
-        _openButton.Content("打开目录…").OnClick(() => Fire(OpenFolderAsync));
-        _refreshButton.Content("刷新").OnClick(() => Fire(() => RunBusyAsync(ct => _controller.RefreshAsync(ct))));
-        _cancelButton.Content("取消").IsVisible(false).OnClick(() => _busyCts?.Cancel());
-        _prerelease.Content("包含预发布版本").OnCheckedChanged(value =>
+        _surfaces.Clear();
+        _openButton.Content(L(TextKey.OpenDirectory)).OnClick(() => Fire(OpenFolderAsync));
+        _refreshButton.Content(L(TextKey.Refresh)).OnClick(() => Fire(() => RunBusyAsync(ct => _controller.RefreshAsync(ct))));
+        _cancelButton.Content(L(TextKey.Cancel)).IsVisible(false).OnClick(() => _busyCts?.Cancel());
+        _prerelease.Content(L(TextKey.Prerelease)).OnCheckedChanged(value =>
         {
             if (!_suppressEvents)
             {
@@ -177,10 +337,23 @@ internal sealed class MainWindow : Window
             .Padding(10, 6)
             .DockTop()
             .Child(new Grid()
-                .Columns("Auto,*")
+                .Columns("Auto,*,Auto")
                 .Children(
                     new StackPanel().Horizontal().Spacing(8).Children(_openButton, _refreshButton, _prerelease),
-                    _workspaceText.Column(1).Margin(16, 0, 0, 0).CenterVertical().TextTrimming(TextTrimming.CharacterEllipsis)));
+                    _workspaceText.Column(1).Margin(16, 0, 8, 0).CenterVertical().TextTrimming(TextTrimming.CharacterEllipsis),
+                    new StackPanel().Horizontal().Spacing(8).Column(2).Children(
+                        _themePicker.Width(140), _languagePicker.Width(150))));
+        _themePicker.OnSelectionChanged(_ =>
+        {
+            if (!_suppressEvents && !_savingPreferences && _themePicker.SelectedIndex is >= 0 and <= 2)
+                Fire(() => ChangePreferencesAsync(_preferences with { Theme = (UiTheme)_themePicker.SelectedIndex }));
+        });
+        _languagePicker.OnSelectionChanged(_ =>
+        {
+            if (!_suppressEvents && !_savingPreferences && _languagePicker.SelectedIndex is >= 0 and <= 4)
+                Fire(() => ChangePreferencesAsync(_preferences with { Language = (UiLanguage)_languagePicker.SelectedIndex }));
+        });
+        _surfaces.Add((toolbar, () => HeaderRowColor));
 
         _errorText.Foreground(OperationDialog.ErrorColor).TextTrimming(TextTrimming.CharacterEllipsis);
         _progressText.Foreground(OperationDialog.MutedColor).TextTrimming(TextTrimming.CharacterEllipsis);
@@ -217,31 +390,22 @@ internal sealed class MainWindow : Window
             .BorderBrush(BorderColor)
             .BorderThickness(new Thickness(0, 0, 1, 0))
             .Child(new DockPanel().Margin(8).Children(
-                new TextBlock().Text("范围").Bold().Margin(2, 0, 0, 6).DockTop(),
+                _scopeTitle.Text(L(TextKey.M084)).Bold().Margin(2, 0, 0, 6).DockTop(),
                 _solutionPanel.DockTop(),
                 _projectList));
 
-        _installedTab.Content("已安装").OnClick(() => SetBrowseMode(false));
-        _browseTab.Content("浏览").OnClick(() => SetBrowseMode(true));
-        _searchBox.Placeholder("搜索所选源中的 NuGet 包").IsVisible(false).OnTextChanged(_ => ScheduleSearch());
-        _sourcePicker.Width(210).OnSelectionChanged(_ =>
+        _tabs.OnSelectionChanged(_ =>
         {
-            if (_suppressEvents || !_browseMode || _state.Workspace is null) return;
-            var index = _sourcePicker.SelectedIndex;
-            var source = index > 0 && index <= _state.Sources.Count ? _state.Sources[index - 1].Name : null;
-            var selection = source is null ? SourceSelection.All : SourceSelection.Subset([source]);
-            if (selection.Equals(_state.SelectedSources)) return;
-            _searchCts?.Cancel();
-            _detailsCts?.Cancel();
-            var query = _searchBox.Text?.Trim() ?? "";
-            Fire(() => _controller.SelectSourcesAsync(selection, CancellationToken.None, query));
+            if (!_suppressEvents) SetBrowseMode(_tabs.SelectedIndex == 1);
         });
+        _searchBox.Placeholder(L(TextKey.M085)).IsVisible(false).OnTextChanged(_ => ScheduleSearch());
+        _sourcePicker.MaxWidth(210).OnClick(ShowSourcePicker);
         var middle = new DockPanel().Children(
             new StackPanel().Vertical().Spacing(6).Margin(8, 8, 8, 4).DockTop().Children(
                 new Grid().Columns("*,Auto").Children(
-                    new StackPanel().Horizontal().Spacing(4).Children(_installedTab, _browseTab),
+                    _tabs,
                     new StackPanel().Horizontal().Spacing(6).Column(1).Children(
-                        Muted("包源").CenterVertical(), _sourcePicker)),
+                        _sourceTitle.CenterVertical(), _sourcePicker)),
                 _searchBox),
             new ScrollViewer().VerticalScroll(ScrollMode.Auto).Content(_middle.Margin(8, 0, 8, 8)));
 
@@ -250,6 +414,8 @@ internal sealed class MainWindow : Window
             .BorderBrush(BorderColor)
             .BorderThickness(new Thickness(1, 0, 0, 0))
             .Child(new ScrollViewer().VerticalScroll(ScrollMode.Auto).Content(_details.Margin(12)));
+        _surfaces.Add((left, () => PaneColor));
+        _surfaces.Add((right, () => PaneColor));
 
         return new DockPanel().Children(
             toolbar,
@@ -303,35 +469,48 @@ internal sealed class MainWindow : Window
 
     private void RenderChrome(WorkspaceViewState state)
     {
-        _workspaceText.Text = state.Workspace is { } w ? w.SolutionPath ?? w.Directory : "未打开工作区";
-        _statusText.Text = state.StatusMessage ?? StatusLabel(state.Status);
-        _progressText.Text = state.Progress ?? "";
-        _progressText.IsVisible = !string.IsNullOrEmpty(state.Progress) && state.IsBusy;
-        _errorText.Text = state.Error ?? "";
-        _errorText.IsVisible = !string.IsNullOrEmpty(state.Error);
-        _errorText.ToolTip(state.Error ?? "");
+        Title = L(TextKey.AppTitle);
+        _openButton.Content(L(TextKey.OpenDirectory));
+        _refreshButton.Content(L(TextKey.Refresh));
+        _cancelButton.Content(L(TextKey.Cancel));
+        _prerelease.Content(L(TextKey.Prerelease));
+        _themePicker.Items([L(TextKey.System), L(TextKey.Light), L(TextKey.Dark)]);
+        _themePicker.SelectedIndex = (int)_preferences.Theme;
+        _languagePicker.Items([L(TextKey.System), "简体中文", "English", "한국어", "Русский"]);
+        _languagePicker.SelectedIndex = (int)_preferences.Language;
+        _themePicker.IsEnabled = _languagePicker.IsEnabled = !_savingPreferences;
+        _tabs.Items([L(TextKey.Installed), L(TextKey.Browse)]);
+        _tabs.SelectedIndex = _browseMode ? 1 : 0;
+        _scopeTitle.Foreground = _sourceTitle.Foreground = AppTheme.Current.Text;
+        _scopeTitle.Text = L(TextKey.M084);
+        _sourceTitle.Text = L(TextKey.M087);
+        foreach (var (border, color) in _surfaces) { border.Background = color(); border.BorderBrush = BorderColor; }
+        _errorText.Foreground = OperationDialog.ErrorColor;
+        _progressText.Foreground = OperationDialog.MutedColor;
+        _workspaceText.Text = state.Workspace is { } w ? w.SolutionPath ?? w.Directory : L(TextKey.M088);
+        _statusText.Text = state.StatusMessage is { } status ? F(status) : StatusLabel(state.Status);
+        _progressText.Text = F(state.Progress);
+        _progressText.IsVisible = state.Progress is not null && state.IsBusy;
+        _errorText.Text = F(state.Error);
+        _errorText.IsVisible = state.Error is not null;
+        _errorText.ToolTip(F(state.Error));
         _cancelButton.IsVisible = state.IsBusy && _busyCts is not null;
         _openButton.IsEnabled = !state.IsBusy;
         _refreshButton.IsEnabled = !state.IsBusy && state.Workspace is not null;
         _prerelease.IsEnabled = !state.IsBusy;
         _prerelease.IsChecked = state.IncludePrerelease;
         _projectList.IsEnabled = !state.IsBusy || state.Status != WorkspaceStatus.Writing;
-        _installedTab.IsEnabled = _browseMode;
-        _browseTab.IsEnabled = !_browseMode && state.Workspace is not null;
+        _tabs.IsEnabled = state.Workspace is not null;
         _searchBox.IsVisible = _browseMode;
         var activity = PresentationModel.BuildActivity(state, _browseMode);
         _statusRing.IsActive = activity.Workspace;
         _statusRing.IsVisible = activity.Workspace;
         _sourcePicker.IsEnabled = activity.SourceSelection;
-        if (!Equals(_sourcesKey, state.Sources))
-        {
-            _sourcesKey = state.Sources;
-            _sourcePicker.Items(new[] { "全部源" }.Concat(state.Sources.Select(s => s.Name)).ToArray());
-        }
         var resolved = state.SelectedSources.Resolve(state.Sources);
-        var sourceIndex = state.SelectedSources.IsAll || resolved.Count != 1 ? 0
-            : state.Sources.ToList().FindIndex(s => string.Equals(s.Name, resolved[0], StringComparison.OrdinalIgnoreCase)) + 1;
-        if (_sourcePicker.SelectedIndex != sourceIndex) _sourcePicker.SelectedIndex = sourceIndex;
+        _sourcePicker.Content(state.SelectedSources.IsAll ? L(TextKey.AllSources)
+            : resolved.Count == 0 ? L(TextKey.NoSources) : resolved.Count == 1 ? resolved[0]
+            : L(TextKey.SelectedSources, resolved.Count.ToString(CultureInfo.InvariantCulture)));
+        if (!activity.SourceSelection) _sourcePopup.Close();
     }
 
     private void RenderProjects(WorkspaceViewState state)
@@ -351,7 +530,7 @@ internal sealed class MainWindow : Window
             }
             _solutionPanel.IsVisible = state.SolutionChoices.Count > 0;
             var items = state.Workspace is { } workspace
-                ? new[] { $"整个工作区（{workspace.Projects.Count} 个项目）" }.Concat(workspace.Projects.Select(p => p.Name)).ToArray()
+                ? new[] { LF(TextKey.M089, $"整个工作区（{workspace.Projects.Count} 个项目）") }.Concat(workspace.Projects.Select(p => p.Name)).ToArray()
                 : [];
             _projectList.Items(items);
         }
@@ -380,13 +559,14 @@ internal sealed class MainWindow : Window
         }
         _middleKey = key;
         _searchRing.IsActive = false;
+        _installedRing.IsActive = false;
         _middle.Clear();
 
         if (state.Workspace is null)
         {
-            _middle.Add(Muted(state.Status == WorkspaceStatus.Loading
-                ? "正在加载工作区…"
-                : "点击“打开目录…”选择包含 .sln / .slnx 或项目文件的目录。").Margin(4, 12, 4, 0));
+            _middle.Add((PresentationModel.BuildActivity(state, _browseMode).InstalledWorkspace
+                ? LoadingLine(_installedRing, L(TextKey.LoadingWorkspace))
+                : Muted(L(TextKey.M091))).Margin(4, 12, 4, 0));
             return;
         }
         if (_browseMode)
@@ -396,7 +576,9 @@ internal sealed class MainWindow : Window
         }
 
         var model = PresentationModel.BuildPackageList(state);
-        if (model.Notice is { } notice)
+        if (PresentationModel.BuildActivity(state, false).InstalledCheck)
+            _middle.Add(LoadingLine(_installedRing, L(TextKey.CheckingUpdates)).Margin(4, 4, 4, 6));
+        else if (model.Notice is { } notice)
         {
             var text = Muted(notice).Margin(4, 4, 4, 6);
             if (!state.UpdatesComplete && state.Status != WorkspaceStatus.Loading)
@@ -408,11 +590,11 @@ internal sealed class MainWindow : Window
         foreach (var diagnostic in state.Diagnostics.Take(5))
         {
             _middle.Add(WarningLine($"{(string.IsNullOrEmpty(diagnostic.SourceName) ? "" : diagnostic.SourceName + "：")}{FirstLine(diagnostic.Message)}")
-                .Margin(4, 0, 4, 4).ToolTip(diagnostic.Message));
+                .Margin(4, 0, 4, 4).ToolTip(F(diagnostic.Message)));
         }
         if (model.Groups.Count == 0)
         {
-            _middle.Add(Muted("当前范围没有包引用。").Margin(4, 8, 4, 0));
+            _middle.Add(Muted(L(TextKey.M093)).Margin(4, 8, 4, 0));
         }
         foreach (var group in model.Groups)
         {
@@ -427,14 +609,14 @@ internal sealed class MainWindow : Window
     private Element GroupHeader(PackageGroupModel group)
     {
         var grid = new Grid().Columns("*,Auto,Auto").Children(
-            new TextBlock().Text($"{group.Title}  {group.Rows.Count}").Bold().CenterVertical());
+            new TextBlock().Text($"{F(group.Title)}  {group.Rows.Count}").Bold().CenterVertical());
         foreach (var action in group.Actions)
         {
             switch (action.Kind)
             {
                 case GroupActionKind.SelectAll:
                     grid.Add(new CheckBox()
-                        .Content(action.Label)
+                        .Content(F(action.Label))
                         .IsChecked(action.IsChecked)
                         .IsEnabled(action.IsEnabled)
                         .Column(1)
@@ -450,7 +632,7 @@ internal sealed class MainWindow : Window
                     break;
                 case GroupActionKind.UpgradeSelected:
                     grid.Add(new Button()
-                        .Content(action.Label)
+                        .Content(F(action.Label))
                         .IsEnabled(action.IsEnabled)
                         .Column(2)
                         .OnClick(() => Fire(() => ApplyAsync(ct => _controller.PreviewSelectedUpgradesAsync(ct)))));
@@ -499,32 +681,32 @@ internal sealed class MainWindow : Window
 
         var selected = string.Equals(state.SelectedPackageId, row.PackageId, StringComparison.OrdinalIgnoreCase);
         return new Border()
-            .Background(selected ? SelectedRowColor : Color.White)
+            .Background(selected ? SelectedRowColor : AppTheme.Current.Row)
             .BorderBrush(BorderColor)
             .BorderThickness(new Thickness(0, 0, 0, 1))
             .Padding(8, 6)
             .Child(grid)
-            .OnMouseDown(_ => SelectPackage(row.PackageId, row.DetailVersion, null));
+            .OnMouseDown(e => PackagePointer(e, row.PackageId, row.DetailVersion, null));
     }
 
     private void RenderSearch(WorkspaceViewState state)
     {
         if (state.SearchError is { } error)
         {
-            _middle.Add(Wrapped("搜索失败：" + FirstLine(error)).Foreground(OperationDialog.ErrorColor).ToolTip(error).Margin(4, 8, 4, 0));
-            _middle.Add(new Button().Content("重试").OnClick(() => Fire(() => _controller.SearchAsync(state.SearchQuery, 0, CancellationToken.None))));
+            _middle.Add(Wrapped(L(TextKey.M094) + FirstLine(error)).Foreground(OperationDialog.ErrorColor).ToolTip(F(error)).Margin(4, 8, 4, 0));
+            _middle.Add(new Button().Content(L(TextKey.M095)).OnClick(() => Fire(() => _controller.SearchAsync(state.SearchQuery, 0, CancellationToken.None))));
         }
         if (state.Browse is { } browse)
         {
-            if (browse.Sources.Count == 0) _middle.Add(Muted("工作区没有启用的包源。").Margin(4, 8, 4, 0));
+            if (browse.Sources.Count == 0) _middle.Add(Muted(_state.Sources.Count == 0 ? L(TextKey.M096) : L(TextKey.SelectSources)).Margin(4, 8, 4, 0));
             foreach (var group in browse.Sources)
             {
                 _middle.Add(new Border().Background(HeaderRowColor).Padding(8, 8).Margin(0, 8, 0, 0)
-                    .Child(new TextBlock().Text(PresentationModel.BrowseGroupTitle(group)).SemiBold()));
+                    .Child(new TextBlock().Text(F(PresentationModel.BrowseGroupTitle(group))).SemiBold()));
                 RenderSearchItems(group.Page, state);
                 if (group.Page.Diagnostics.Count > 0)
                 {
-                    _middle.Add(new Button().Content(state.SelectedSources.IsAll ? "重新加载全部包源" : "重试包源")
+                    _middle.Add(new Button().Content(state.SelectedSources.IsAll ? L(TextKey.M097) : L(TextKey.M098))
                         .Margin(0, 6, 0, 0).IsEnabled(!state.SearchLoading && !state.IsBusy)
                         .OnClick(() => Fire(() => _controller.LoadBrowseAsync(true, CancellationToken.None))));
                 }
@@ -535,13 +717,13 @@ internal sealed class MainWindow : Window
             RenderSearchItems(page, state);
             if (page.HasMore && !state.SearchLoading)
             {
-                _middle.Add(new Button().Content("加载更多").Margin(0, 8, 0, 0)
-                    .OnClick(() => Fire(() => _controller.SearchAsync(state.SearchQuery, page.Items.Count, CancellationToken.None))));
+                _middle.Add(new Button().Content(L(TextKey.M099)).Margin(0, 8, 0, 0)
+                    .OnClick(() => Fire(() => _controller.SearchAsync(state.SearchQuery, page.NextSkip, CancellationToken.None))));
             }
         }
         if (state.SearchLoading)
         {
-            _middle.Add(LoadingLine(_searchRing, string.IsNullOrWhiteSpace(state.SearchQuery) ? "正在加载包源…" : "正在搜索…")
+            _middle.Add(LoadingLine(_searchRing, string.IsNullOrWhiteSpace(state.SearchQuery) ? L(TextKey.M100) : L(TextKey.M101))
                 .Margin(4, 8, 4, 0));
         }
     }
@@ -549,28 +731,29 @@ internal sealed class MainWindow : Window
     private void RenderSearchItems(SearchPage page, WorkspaceViewState state)
     {
         foreach (var diagnostic in page.Diagnostics)
-            _middle.Add(WarningLine($"{diagnostic.SourceName}：{FirstLine(diagnostic.Message)}").Margin(4, 0, 4, 4).ToolTip(diagnostic.Message));
+            _middle.Add(WarningLine($"{diagnostic.SourceName}: {FirstLine(diagnostic.Message)}").Margin(4, 0, 4, 4).ToolTip(F(diagnostic.Message)));
         if (page.Items.Count == 0 && !state.SearchLoading)
-            _middle.Add(Muted(page.Diagnostics.Count > 0 ? "没有结果（包源查询失败）。" : "没有找到匹配的包。").Margin(4, 8, 4, 0));
+            _middle.Add(Muted(page.Diagnostics.Count > 0 ? L(TextKey.M102) : L(TextKey.M103)).Margin(4, 8, 4, 0));
         foreach (var hit in page.Items)
         {
             var selected = string.Equals(state.SelectedPackageId, hit.PackageId, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(state.SelectedPackageSourceName, hit.SourceName, StringComparison.OrdinalIgnoreCase);
             var installed = state.Installed.Any(o => string.Equals(o.PackageId, hit.PackageId, StringComparison.OrdinalIgnoreCase));
-            _middle.Add(new Border().Background(selected ? SelectedRowColor : Color.White).BorderBrush(BorderColor)
+            _middle.Add(new Border().Background(selected ? SelectedRowColor : AppTheme.Current.Row).BorderBrush(BorderColor)
                 .BorderThickness(new Thickness(0, 0, 0, 1)).Padding(8, 6)
-                .OnMouseDown(_ => SelectPackage(hit.PackageId, hit.Version, hit.SourceName))
+                .OnMouseDown(e => PackagePointer(e, hit.PackageId, hit.Version, hit.SourceName))
                 .Child(new Grid().Columns("*,Auto").Children(
                     new StackPanel().Vertical().Children(
-                        new TextBlock().Text(installed ? $"{hit.PackageId}（已安装）" : hit.PackageId).SemiBold(),
-                        Muted(FirstLine(hit.Description ?? "未提供简介")).FontSize(ThemeFontSize.Small).TextTrimming(TextTrimming.CharacterEllipsis)),
+                        new TextBlock().Text(installed ? LF(TextKey.M104, $"{hit.PackageId}（已安装）") : hit.PackageId).SemiBold(),
+                        Muted(FirstLine(hit.Description ?? L(TextKey.M105))).FontSize(ThemeFontSize.Small).TextTrimming(TextTrimming.CharacterEllipsis)),
                     new StackPanel().Vertical().Column(1).Margin(8, 0, 0, 0).Children(
                         new TextBlock().Text(hit.Version), Muted(hit.SourceName).FontSize(ThemeFontSize.Small)))));
         }
     }
 
     private static FrameworkElement LoadingLine(ProgressRing ring, string message) =>
-        new StackPanel().Horizontal().Spacing(8).Children(ring.Width(18).Height(18).IsActive(true).CenterVertical(), Muted(message).CenterVertical());
+        new StackPanel().Horizontal().Spacing(8).Children(ring.Width(18).Height(18).IsActive(true).CenterVertical(),
+            new TextBlock().Text(message).TextWrapping(TextWrapping.Wrap).CenterVertical());
 
     private static FrameworkElement WarningLine(string message) =>
         new Grid().Columns("Auto,*").Children(
@@ -579,7 +762,7 @@ internal sealed class MainWindow : Window
 
     private void RenderDetails(WorkspaceViewState state)
     {
-        var key = (state.SelectedPackageId, state.SelectedPackageSourceName, state.SelectedVersion, state.Versions, state.Details, state.DetailsLoading, state.DetailsError,
+        var key = (state.SelectedPackageId, state.SelectedPackageSourceName, state.SelectedVersion, state.Versions, state.VersionsLoading, state.Details, state.DetailsLoading, state.DetailsError,
             state.ProjectStates, state.IsBusy);
         if (Equals(key, _detailsKey))
         {
@@ -592,7 +775,7 @@ internal sealed class MainWindow : Window
 
         if (state.SelectedPackageId is not { } packageId)
         {
-            _details.Add(Muted("选择一个包查看详情。"));
+            _details.Add(Muted(L(TextKey.M106)));
             return;
         }
         _details.Add(new TextBlock().Text(packageId).FontSize(18).Bold().TextWrapping(TextWrapping.Wrap));
@@ -611,9 +794,9 @@ internal sealed class MainWindow : Window
                 SelectPackage(packageId, versions[combo.SelectedIndex], state.SelectedPackageSourceName ?? state.Versions?.SourceName);
             }
         });
-        var versionRow = new StackPanel().Horizontal().Spacing(8).Children(new TextBlock().Text("版本").CenterVertical(), combo);
+        var versionRow = new StackPanel().Horizontal().Spacing(8).Children(new TextBlock().Text(L(TextKey.M107)).CenterVertical(), combo);
         if (PresentationModel.BuildActivity(state, _browseMode).Versions)
-            versionRow.Add(LoadingLine(_versionsRing, "正在读取版本…"));
+            versionRow.Add(LoadingLine(_versionsRing, L(TextKey.M108)));
         _details.Add(versionRow);
         if (state.Versions?.Diagnostics is { Count: > 0 } versionDiagnostics)
         {
@@ -623,43 +806,43 @@ internal sealed class MainWindow : Window
             }
         }
 
-        _details.Add(SectionTitle("项目"));
+        _details.Add(SectionTitle(L(TextKey.M109)));
         foreach (var row in PresentationModel.BuildProjectRows(state))
         {
             _details.Add(ProjectRow(row, packageId, state));
         }
 
-        _details.Add(SectionTitle("包信息"));
+        _details.Add(SectionTitle(L(TextKey.M110)));
         if (PresentationModel.BuildActivity(state, _browseMode).Details)
         {
-            _details.Add(LoadingLine(_detailsRing, "正在读取包信息…"));
+            _details.Add(LoadingLine(_detailsRing, L(TextKey.M111)));
         }
         else if (state.DetailsError is { } detailsError)
         {
-            _details.Add(Wrapped("读取包信息失败：" + detailsError).Foreground(OperationDialog.ErrorColor));
+            _details.Add(Wrapped(L(TextKey.M112) + F(detailsError)).Foreground(OperationDialog.ErrorColor));
         }
         else if (state.Details is { } details)
         {
-            AddField("作者", details.Authors);
-            AddField("简介", details.Description);
-            AddField("许可证", details.License);
-            AddField("项目地址", details.ProjectUrl?.ToString());
-            AddField("支持框架", details.Frameworks.Count > 0 ? string.Join("、", details.Frameworks) : null);
+            AddField(L(TextKey.M113), details.Authors);
+            AddField(L(TextKey.M114), details.Description);
+            AddField(L(TextKey.M115), details.License);
+            AddField(L(TextKey.M116), details.ProjectUrl?.ToString());
+            AddField(L(TextKey.M117), details.Frameworks.Count > 0 ? string.Join("、", details.Frameworks) : null);
             if (details.Origin is { } origin)
             {
-                _details.Add(Muted("来源：" + origin).FontSize(ThemeFontSize.Small));
+                _details.Add(Muted(L(TextKey.M118) + F(origin)).FontSize(ThemeFontSize.Small));
             }
-            _details.Add(new TextBlock().Text("依赖").SemiBold());
+            _details.Add(new TextBlock().Text(L(TextKey.M119)).SemiBold());
             if (details.Dependencies.Count == 0)
             {
-                _details.Add(Muted("未提供（或无依赖）").Margin(8, 0, 0, 0));
+                _details.Add(Muted(L(TextKey.M120)).Margin(8, 0, 0, 0));
             }
             foreach (var group in details.Dependencies)
             {
-                _details.Add(new TextBlock().Text(group.Framework).Margin(8, 0, 0, 0));
+                _details.Add(new TextBlock().Text(group.Framework.Length == 0 ? L(TextKey.M070) : group.Framework).Margin(8, 0, 0, 0));
                 if (group.Items.Count == 0)
                 {
-                    _details.Add(Muted("无依赖").Margin(20, 0, 0, 0).FontSize(ThemeFontSize.Small));
+                    _details.Add(Muted(L(TextKey.M121)).Margin(20, 0, 0, 0).FontSize(ThemeFontSize.Small));
                 }
                 foreach (var dependency in group.Items)
                 {
@@ -668,7 +851,7 @@ internal sealed class MainWindow : Window
             }
             foreach (var diagnostic in details.Diagnostics)
             {
-                _details.Add(WarningLine($"{diagnostic.SourceName}：{diagnostic.Message}"));
+                _details.Add(WarningLine($"{diagnostic.SourceName}: {F(diagnostic.Message)}"));
             }
         }
     }
@@ -686,7 +869,7 @@ internal sealed class MainWindow : Window
         if (row.ActionLabel is { } label)
         {
             grid.Add(new Button()
-                .Content(label)
+                .Content(F(label))
                 .IsEnabled(row.ActionEnabled)
                 .Column(1)
                 .CenterVertical()
@@ -700,7 +883,7 @@ internal sealed class MainWindow : Window
                 }));
         }
         return new Border()
-            .Background(Color.White)
+            .Background(AppTheme.Current.Row)
             .BorderBrush(BorderColor)
             .BorderThickness(new Thickness(1))
             .CornerRadius(new CornerRadius(4))
@@ -712,8 +895,10 @@ internal sealed class MainWindow : Window
     {
         _details.Add(new Grid().Columns("72,*").Children(
             Muted(label),
-            Wrapped(string.IsNullOrWhiteSpace(value) ? "未提供" : value).Column(1)));
+            Wrapped(string.IsNullOrWhiteSpace(value) ? L(TextKey.M122) : value).Column(1)));
     }
+
+    private void AddField(string label, UiMessage? value) => AddField(label, value is null ? null : F(value));
 
     private void SetBrowseMode(bool browse)
     {
@@ -760,7 +945,7 @@ internal sealed class MainWindow : Window
         var folder = FileDialog.SelectFolder(new FolderDialogOptions
         {
             Owner = this,
-            Title = "选择包含解决方案或项目的目录",
+            Title = L(TextKey.M123),
             PreferNative = true,
             InitialDirectory = _state.Workspace?.Directory,
         });
@@ -774,7 +959,7 @@ internal sealed class MainWindow : Window
     {
         if (!Directory.Exists(directory))
         {
-            return MessageBox.NotifyAsync("目录不存在", PromptIconKind.Error, directory, this);
+            return MessageBox.NotifyAsync(L(TextKey.M124), PromptIconKind.Error, directory, this);
         }
         _detailsKey = null;
         return RunBusyAsync(async ct =>
@@ -825,7 +1010,7 @@ internal sealed class MainWindow : Window
     private async Task ApplyCoreAsync(Func<CancellationToken, Task<OperationPlan>> preview)
     {
         var plan = await preview(CancellationToken.None);
-        var confirmed = await OnUiAsync(() => OperationDialog.ConfirmAsync(this, plan, _controller.State.Scope));
+        var confirmed = await OnUiAsync(() => Dialogs.ConfirmAsync(this, plan, _controller.State.Scope));
         if (!confirmed)
         {
             return;
@@ -836,7 +1021,7 @@ internal sealed class MainWindow : Window
         {
             await OnUiAsync(async () =>
             {
-                await OperationDialog.ShowFailureAsync(this, result);
+                await Dialogs.ShowFailureAsync(this, result);
                 return true;
             });
         }
@@ -844,7 +1029,7 @@ internal sealed class MainWindow : Window
         {
             await OnUiAsync(async () =>
             {
-                await MessageBox.NotifyAsync(state.StatusMessage ?? "操作失败", PromptIconKind.Error, error, this);
+                await MessageBox.NotifyAsync(state.StatusMessage is { } message ? F(message) : L(TextKey.M125), PromptIconKind.Error, F(error), this);
                 return true;
             });
         }
@@ -888,7 +1073,7 @@ internal sealed class MainWindow : Window
             {
                 await OnUiAsync(async () =>
                 {
-                    await MessageBox.NotifyAsync("操作未完成", PromptIconKind.Error, ex.Message, this);
+                    await MessageBox.NotifyAsync(L(TextKey.M126), PromptIconKind.Error, F(UiMessage.FromException(ex)), this);
                     return true;
                 });
             }
@@ -899,17 +1084,17 @@ internal sealed class MainWindow : Window
         }
     }
 
-    private static IDispatcher Dispatcher => Application.Current.Dispatcher ?? throw new InvalidOperationException("UI 调度器不可用。");
+    private static IDispatcher Dispatcher => Application.Current.Dispatcher ?? throw UiErrors.InvalidOperation(Messages.M(TextKey.M127));
 
-    private static string StatusLabel(WorkspaceStatus status) => status switch
+    private string StatusLabel(WorkspaceStatus status) => status switch
     {
-        WorkspaceStatus.Idle => "就绪",
-        WorkspaceStatus.Loading => "正在加载…",
-        WorkspaceStatus.Ready => "就绪",
-        WorkspaceStatus.Writing => "正在写入…",
-        WorkspaceStatus.Cancelled => "已取消",
-        WorkspaceStatus.Failed => "失败",
-        _ => "需要恢复",
+        WorkspaceStatus.Idle => L(TextKey.Ready),
+        WorkspaceStatus.Loading => L(TextKey.M129),
+        WorkspaceStatus.Ready => L(TextKey.Ready),
+        WorkspaceStatus.Writing => L(TextKey.M130),
+        WorkspaceStatus.Cancelled => L(TextKey.M131),
+        WorkspaceStatus.Failed => L(TextKey.M132),
+        _ => L(TextKey.M133),
     };
 
     private static string FirstLine(string text)
@@ -917,6 +1102,10 @@ internal sealed class MainWindow : Window
         var line = text.Split('\n', 2)[0].Trim();
         return line.Length > 200 ? line[..200] + "…" : line;
     }
+    private string FirstLine(UiMessage text) => FirstLine(F(text));
+    private TextBlock Muted(UiMessage text) => Muted(F(text));
+    private TextBlock Wrapped(UiMessage text) => Wrapped(F(text));
+    private FrameworkElement WarningLine(UiMessage text) => WarningLine(F(text));
 
     private static TextBlock Muted(string text) => new TextBlock().Text(text).Foreground(OperationDialog.MutedColor).TextWrapping(TextWrapping.Wrap);
 

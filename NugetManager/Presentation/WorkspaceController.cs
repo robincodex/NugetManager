@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using NugetManager.Domain;
 using NugetManager.Operations;
 using NugetManager.Packages;
@@ -29,7 +31,7 @@ internal sealed record ProjectPackageState(
     ProjectDescriptor Project,
     IReadOnlyList<PackageOccurrence> Occurrences,
     ProjectAction Action,
-    string? BlockReason)
+    UiMessage? BlockReason)
 {
     public bool IsDirect => Occurrences.Any(o => o.Kind == ReferenceKind.Direct);
 }
@@ -49,9 +51,10 @@ internal sealed record WorkspaceViewState
     public string? SelectedPackageSourceName { get; init; }
     public string? SelectedVersion { get; init; }
     public PackageVersions? Versions { get; init; }
+    public bool VersionsLoading { get; init; }
     public PackageDetails? Details { get; init; }
     public bool DetailsLoading { get; init; }
-    public string? DetailsError { get; init; }
+    public UiMessage? DetailsError { get; init; }
     public IReadOnlyList<ProjectPackageState> ProjectStates { get; init; } = [];
     public string SearchQuery { get; init; } = "";
     public SearchPage? Search { get; init; }
@@ -59,15 +62,15 @@ internal sealed record WorkspaceViewState
     public SourceSelection SelectedSources { get; init; } = SourceSelection.All;
     public BrowsePage? Browse { get; init; }
     public bool SearchLoading { get; init; }
-    public string? SearchError { get; init; }
+    public UiMessage? SearchError { get; init; }
     public IReadOnlyList<ProjectDescriptor> VisibleProjects { get; init; } = [];
     public IReadOnlySet<string> SelectedPackageIds { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     public bool IncludePrerelease { get; init; }
     public bool IsBusy { get; init; }
     public WorkspaceStatus Status { get; init; } = WorkspaceStatus.Idle;
-    public string? StatusMessage { get; init; }
-    public string? Error { get; init; }
-    public string? Progress { get; init; }
+    public UiMessage? StatusMessage { get; init; }
+    public UiMessage? Error { get; init; }
+    public UiMessage? Progress { get; init; }
     public IReadOnlyList<SourceDiagnostic> Diagnostics { get; init; } = [];
     public OperationResult? LastOperation { get; init; }
 }
@@ -101,6 +104,7 @@ internal sealed class WorkspaceController(
     private readonly Dictionary<(string Directory, SourceSelection Sources, bool Prerelease), BrowsePage> _browseCache = [];
 
     public event Action<WorkspaceViewState>? StateChanged;
+    public PackageLinkMenu CreateLinkMenu(IExternalLinkOpener opener) => new(metadata, opener);
 
     public WorkspaceViewState State
     {
@@ -124,7 +128,7 @@ internal sealed class WorkspaceController(
         {
             IncludePrerelease = State.IncludePrerelease,
             Status = WorkspaceStatus.Loading,
-            StatusMessage = "正在加载工作区…",
+            StatusMessage = M(TextKey.LoadingWorkspace),
             IsBusy = true,
         });
         try
@@ -140,27 +144,27 @@ internal sealed class WorkspaceController(
                 Status = WorkspaceStatus.Idle,
                 IsBusy = false,
                 SolutionChoices = ex.Solutions,
-                StatusMessage = "目录中有多个解决方案，请选择一个。",
+                StatusMessage = M(TextKey.M196),
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            PublishIf(generation, s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = ex.Message, StatusMessage = "加载失败" });
+            PublishIf(generation, s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = UiMessage.FromException(ex), StatusMessage = M(TextKey.M197) });
         }
         catch (OperationCanceledException)
         {
-            PublishIf(generation, s => s with { Status = WorkspaceStatus.Cancelled, IsBusy = false, StatusMessage = "已取消加载" });
+            PublishIf(generation, s => s with { Status = WorkspaceStatus.Cancelled, IsBusy = false, StatusMessage = M(TextKey.M198) });
         }
     }
 
     public async Task RefreshAsync(CancellationToken ct)
     {
         EnsureNotWriting();
-        var workspace = State.Workspace ?? throw new InvalidOperationException("尚未打开工作区。");
+        var workspace = State.Workspace ?? throw UiErrors.InvalidOperation(M(TextKey.M199));
         var generation = Interlocked.Increment(ref _loadGeneration);
         Interlocked.Increment(ref _searchGeneration);
         lock (_gate) _browseCache.Clear();
-        Publish(s => s with { Status = WorkspaceStatus.Loading, IsBusy = true, SearchLoading = false, StatusMessage = "正在刷新…", Error = null });
+        Publish(s => s with { Status = WorkspaceStatus.Loading, IsBusy = true, SearchLoading = false, StatusMessage = M(TextKey.M200), Error = null });
         try
         {
             await LoadAsync(workspace, generation, ct).ConfigureAwait(false);
@@ -171,11 +175,11 @@ internal sealed class WorkspaceController(
         }
         catch (OperationCanceledException)
         {
-            PublishIf(generation, s => s with { Status = WorkspaceStatus.Cancelled, IsBusy = false, StatusMessage = "已取消刷新" });
+            PublishIf(generation, s => s with { Status = WorkspaceStatus.Cancelled, IsBusy = false, StatusMessage = M(TextKey.M201) });
         }
         catch (Exception ex)
         {
-            PublishIf(generation, s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = ex.Message, StatusMessage = "刷新失败" });
+            PublishIf(generation, s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = UiMessage.FromException(ex), StatusMessage = M(TextKey.M202) });
         }
     }
 
@@ -189,7 +193,7 @@ internal sealed class WorkspaceController(
             return;
         }
         var generation = Interlocked.Increment(ref _loadGeneration);
-        Publish(s => s with { IsBusy = true, StatusMessage = "正在检测更新…" });
+        Publish(s => s with { IsBusy = true, StatusMessage = M(TextKey.CheckingUpdates) });
         try
         {
             await CheckUpdatesAsync(State.Workspace!, State.Evaluations, include, generation, ct).ConfigureAwait(false);
@@ -201,7 +205,7 @@ internal sealed class WorkspaceController(
         }
         catch (OperationCanceledException)
         {
-            PublishIf(generation, s => s with { Status = WorkspaceStatus.Cancelled, IsBusy = false, StatusMessage = "已取消更新检测" });
+            PublishIf(generation, s => s with { Status = WorkspaceStatus.Cancelled, IsBusy = false, StatusMessage = M(TextKey.M203) });
         }
     }
 
@@ -260,7 +264,7 @@ internal sealed class WorkspaceController(
 
     public async Task SelectPackageAsync(string packageId, string version, string? sourceName, CancellationToken ct)
     {
-        var workspace = State.Workspace ?? throw new InvalidOperationException("尚未打开工作区。");
+        var workspace = State.Workspace ?? throw UiErrors.InvalidOperation(M(TextKey.M199));
         var generation = Interlocked.Increment(ref _detailsGeneration);
         var packageChanged = !string.Equals(State.SelectedPackageId, packageId, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(State.SelectedPackageSourceName, sourceName, StringComparison.OrdinalIgnoreCase);
@@ -273,6 +277,7 @@ internal sealed class WorkspaceController(
             DetailsLoading = true,
             DetailsError = null,
             Versions = packageChanged ? null : s.Versions,
+            VersionsLoading = packageChanged || s.VersionsLoading,
         }));
 
         if (packageChanged)
@@ -293,7 +298,7 @@ internal sealed class WorkspaceController(
         catch (Exception ex)
         {
             PublishIf(() => generation == Interlocked.Read(ref _detailsGeneration),
-                s => s with { DetailsLoading = false, DetailsError = ex.Message });
+                s => s with { DetailsLoading = false, DetailsError = UiMessage.FromException(ex) });
         }
     }
 
@@ -305,7 +310,7 @@ internal sealed class WorkspaceController(
             await LoadBrowseAsync(false, ct).ConfigureAwait(false);
             return;
         }
-        var workspace = State.Workspace ?? throw new InvalidOperationException("尚未打开工作区。");
+        var workspace = State.Workspace ?? throw UiErrors.InvalidOperation(M(TextKey.M199));
         var generation = Interlocked.Increment(ref _searchGeneration);
         var state = State;
         Publish(s => s with { SearchQuery = query, Browse = null, SearchLoading = true, SearchError = null, Search = skip == 0 ? null : s.Search });
@@ -317,7 +322,7 @@ internal sealed class WorkspaceController(
             {
                 SearchLoading = false,
                 Search = skip > 0 && s.Search is { } previous
-                    ? page with { Items = [.. previous.Items, .. page.Items], Skip = 0 }
+                    ? page with { Items = [.. previous.Items, .. page.Items] }
                     : page,
             });
         }
@@ -328,7 +333,7 @@ internal sealed class WorkspaceController(
         catch (Exception ex)
         {
             PublishIf(() => generation == Interlocked.Read(ref _searchGeneration),
-                s => s with { SearchLoading = false, SearchError = ex.Message });
+                s => s with { SearchLoading = false, SearchError = UiMessage.FromException(ex) });
         }
     }
 
@@ -339,14 +344,14 @@ internal sealed class WorkspaceController(
         Interlocked.Increment(ref _detailsGeneration);
         Interlocked.Increment(ref _versionsGeneration);
         Publish(s => Compose(s with { SelectedSources = selection.Reconcile(s.Sources), SearchQuery = query ?? s.SearchQuery, Search = null, Browse = null, SearchError = null,
-            SelectedPackageId = null, SelectedPackageSourceName = null, Versions = null, Details = null, DetailsLoading = false }));
+            SelectedPackageId = null, SelectedPackageSourceName = null, Versions = null, VersionsLoading = false, Details = null, DetailsLoading = false }));
         await SearchAsync(State.SearchQuery, 0, ct).ConfigureAwait(false);
     }
 
     public async Task LoadBrowseAsync(bool refresh, CancellationToken ct)
     {
         var state = State;
-        var workspace = state.Workspace ?? throw new InvalidOperationException("尚未打开工作区。");
+        var workspace = state.Workspace ?? throw UiErrors.InvalidOperation(M(TextKey.M199));
         var generation = Interlocked.Increment(ref _searchGeneration);
         var key = (workspace.Directory, SourceSelection.Subset(state.SelectedSources.Resolve(state.Sources)), state.IncludePrerelease);
         BrowsePage? cached;
@@ -376,14 +381,14 @@ internal sealed class WorkspaceController(
         }
         catch (Exception ex)
         {
-            PublishIf(() => generation == Interlocked.Read(ref _searchGeneration), s => s with { SearchLoading = false, SearchError = ex.Message });
+            PublishIf(() => generation == Interlocked.Read(ref _searchGeneration), s => s with { SearchLoading = false, SearchError = UiMessage.FromException(ex) });
         }
     }
 
     public Task<OperationPlan> PreviewChangesAsync(IReadOnlyList<PackageChange> changes, CancellationToken ct)
     {
         EnsureNotWriting();
-        var workspace = State.Workspace ?? throw new InvalidOperationException("尚未打开工作区。");
+        var workspace = State.Workspace ?? throw UiErrors.InvalidOperation(M(TextKey.M199));
         return operations.PlanAsync(workspace, changes, ct);
     }
 
@@ -399,7 +404,7 @@ internal sealed class WorkspaceController(
             .ToList();
         if (changes.Count == 0)
         {
-            throw new InvalidOperationException("没有勾选可升级的包。");
+            throw UiErrors.InvalidOperation(M(TextKey.M204));
         }
         return PreviewChangesAsync(changes, ct);
     }
@@ -410,7 +415,7 @@ internal sealed class WorkspaceController(
         {
             if (_writing)
             {
-                throw new InvalidOperationException("已有写入操作正在进行。");
+                throw UiErrors.InvalidOperation(M(TextKey.M205));
             }
             _writing = true;
         }
@@ -422,7 +427,7 @@ internal sealed class WorkspaceController(
             IsBusy = true,
             SearchLoading = false,
             Error = null,
-            StatusMessage = "正在写入…",
+            StatusMessage = M(TextKey.M130),
             Progress = null,
         });
         try
@@ -430,17 +435,17 @@ internal sealed class WorkspaceController(
             OperationResult result;
             try
             {
-                var progress = new Progress<string>(p => Publish(s => s with { Progress = p }));
+                var progress = new Progress<UiMessage>(p => Publish(s => s with { Progress = p }));
                 result = await operations.ExecuteAsync(plan, progress, ct).ConfigureAwait(false);
             }
             catch (PlanStaleException ex)
             {
-                Publish(s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = ex.Message, StatusMessage = "预览后文件已变化，未写入任何内容，请重新预览。" });
+                Publish(s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = UiMessage.FromException(ex), StatusMessage = M(TextKey.M206) });
                 return;
             }
             catch (Exception ex)
             {
-                Publish(s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = ex.Message, StatusMessage = "操作未执行" });
+                Publish(s => s with { Status = WorkspaceStatus.Failed, IsBusy = false, Error = UiMessage.FromException(ex), StatusMessage = M(TextKey.M207) });
                 return;
             }
 
@@ -453,7 +458,7 @@ internal sealed class WorkspaceController(
                         Status = WorkspaceStatus.RecoveryRequired,
                         IsBusy = false,
                         Error = result.Error,
-                        StatusMessage = "操作失败且未能完全回滚，需要恢复。",
+                        StatusMessage = M(TextKey.M208),
                     });
                     return;
                 case OperationStatus.RolledBack:
@@ -463,7 +468,7 @@ internal sealed class WorkspaceController(
                         Status = WorkspaceStatus.Failed,
                         IsBusy = false,
                         Error = result.Error,
-                        StatusMessage = "操作失败，所有文件已回滚。",
+                        StatusMessage = M(TextKey.M209),
                     });
                     return;
             }
@@ -475,7 +480,7 @@ internal sealed class WorkspaceController(
                 await LoadAsync(workspace, generation, CancellationToken.None).ConfigureAwait(false);
                 PublishIf(generation, s => s with
                 {
-                    StatusMessage = s.UpdatesComplete ? "操作成功" : "操作成功，更新检测未完成",
+                    StatusMessage = s.UpdatesComplete ? M(TextKey.M210) : M(TextKey.M211),
                 });
             }
             catch (Exception ex)
@@ -485,8 +490,8 @@ internal sealed class WorkspaceController(
                     Status = WorkspaceStatus.Ready,
                     IsBusy = false,
                     UpdatesComplete = false,
-                    StatusMessage = "操作成功，刷新依赖列表未完成",
-                    Error = ex.Message,
+                    StatusMessage = M(TextKey.M212),
+                    Error = UiMessage.FromException(ex),
                 });
             }
         }
@@ -541,7 +546,7 @@ internal sealed class WorkspaceController(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            report = new UpdateReport([], [new SourceDiagnostic("", "UpdateCheckFailed", ex.Message)], false);
+            report = new UpdateReport([], [new SourceDiagnostic("", "UpdateCheckFailed", UiMessage.FromException(ex))], false);
         }
         if (generation != Interlocked.Read(ref _loadGeneration))
         {
@@ -571,23 +576,24 @@ internal sealed class WorkspaceController(
             PublishIf(() => generation == Interlocked.Read(ref _versionsGeneration)
                     && string.Equals(State.SelectedPackageId, packageId, StringComparison.OrdinalIgnoreCase)
                     && string.Equals(State.SelectedPackageSourceName, sourceName, StringComparison.OrdinalIgnoreCase),
-                s => s with { Versions = versions });
+                s => s with { Versions = versions, VersionsLoading = false });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             PublishIf(() => generation == Interlocked.Read(ref _versionsGeneration),
-                s => s with { Versions = new PackageVersions(packageId, [], [new SourceDiagnostic("", "VersionsFailed", ex.Message)]) });
+                s => s with { VersionsLoading = false, Versions = new PackageVersions(packageId, [], [new SourceDiagnostic("", "VersionsFailed", UiMessage.FromException(ex))]) });
         }
         catch (OperationCanceledException)
         {
+            PublishIf(() => generation == Interlocked.Read(ref _versionsGeneration), s => s with { VersionsLoading = false });
         }
     }
 
-    private string ReadyMessage()
+    private UiMessage ReadyMessage()
     {
         lock (_gate)
         {
-            return _report.IsComplete ? "就绪" : "更新检测未完成";
+            return _report.IsComplete ? M(TextKey.Ready) : M(TextKey.M213);
         }
     }
 
@@ -648,12 +654,12 @@ internal sealed class WorkspaceController(
 
             if (occurrences.Any(o => o.Kind == ReferenceKind.Direct) || reference is not null)
             {
-                var blocked = reference is { IsWritable: false } ? reference.WriteBlockReason ?? "该引用无法安全修改。" : null;
+                var blocked = reference is { IsWritable: false } ? reference.WriteBlockReason ?? M(TextKey.M214) : null;
                 rows.Add(new ProjectPackageState(project, occurrences, ProjectAction.Uninstall, blocked));
             }
             else if (occurrences.Count > 0 && occurrences.All(o => o.Kind == ReferenceKind.SdkImplicit))
             {
-                rows.Add(new ProjectPackageState(project, occurrences, ProjectAction.None, "SDK 自动引用，不可修改。"));
+                rows.Add(new ProjectPackageState(project, occurrences, ProjectAction.None, M(TextKey.M215)));
             }
             else
             {
@@ -667,7 +673,7 @@ internal sealed class WorkspaceController(
     {
         if (_writing)
         {
-            throw new InvalidOperationException("写入操作进行中，暂不能更改范围或刷新。");
+            throw UiErrors.InvalidOperation(M(TextKey.M216));
         }
     }
 

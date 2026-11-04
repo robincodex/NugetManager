@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.Text.Json;
 using NugetManager.Domain;
 using NugetManager.Sdk;
@@ -39,12 +41,12 @@ internal sealed class PopularPackageReader(HttpClient http) : IPopularPackageRea
                 || output.Data.Any(p => p.PackageRegistration?.Id is null || p.PackageRegistration.DownloadCount is null
                     || p.Version is null || !NuGetVersionComparer.TryParse(p.Version, out _)))
             {
-                throw new SdkOutputException("热门查询返回了无法识别的输出。");
+                throw new SdkOutputException(M(TextKey.M072));
             }
             var counts = output.Data.Select(p => p.PackageRegistration!.DownloadCount!.Value).ToArray();
             if (!counts.SequenceEqual(counts.OrderDescending()))
             {
-                throw new SdkOutputException("包源未返回下载量降序，不能将结果标为热门。");
+                throw new SdkOutputException(M(TextKey.M073));
             }
             var items = output.Data.Take(take)
                 .Select(p => new SearchHit(p.PackageRegistration!.Id!, p.Version!, source.Name, p.Description)).ToList();
@@ -53,7 +55,7 @@ internal sealed class PopularPackageReader(HttpClient http) : IPopularPackageRea
         catch (Exception ex) when (ex is HttpRequestException or JsonException or SdkOutputException
             || ex is OperationCanceledException && !ct.IsCancellationRequested)
         {
-            return new PopularReadResult(true, [], [new SourceDiagnostic(source.Name, "PopularityFailed", ex.Message)]);
+            return new PopularReadResult(true, [], [new SourceDiagnostic(source.Name, "PopularityFailed", UiMessage.FromException(ex))]);
         }
     }
 }

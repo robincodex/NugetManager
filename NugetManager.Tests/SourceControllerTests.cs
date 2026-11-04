@@ -6,6 +6,39 @@ namespace NugetManager.Tests;
 
 public class SourceControllerTests
 {
+    [Fact]
+    public async Task MultiSourcePagingUsesPerSourceOffsetRatherThanCombinedRowCount()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        var catalog = new FakeCatalog
+        {
+            Search = (_, skip) => Task.FromResult(new SearchPage(
+                Enumerable.Range(skip, 20).SelectMany(i => new[] { new SearchHit($"P{i}", "1.0", "local", null),
+                    new SearchHit($"P{i}", "1.0", "second", null) }).ToArray(), skip, 20, true, [])),
+        };
+        var controller = Controller(ws, catalog);
+        await controller.OpenAsync(ws.Root, null, CancellationToken.None);
+        await controller.SearchAsync("packages", 0, CancellationToken.None);
+        Assert.Equal(20, controller.State.Search!.NextSkip);
+        await controller.SearchAsync("packages", controller.State.Search.NextSkip, CancellationToken.None);
+        Assert.Equal(80, controller.State.Search!.Items.Count);
+        Assert.Equal(40, controller.State.Search.NextSkip);
+        await controller.SearchAsync("packages", controller.State.Search.NextSkip, CancellationToken.None);
+        Assert.Equal(120, controller.State.Search!.Items.Count);
+        Assert.Equal(60, controller.State.Search.NextSkip);
+    }
+
+    [Fact]
+    public async Task CancelledVersionRequestStopsItsOwnRing()
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        var catalog = new FakeCatalog { Versions = _ => Task.FromException<PackageVersions>(new OperationCanceledException()) };
+        var controller = Controller(ws, catalog);
+        await controller.OpenAsync(ws.Root, null, CancellationToken.None);
+        await controller.SelectPackageAsync("Example", "1.0", "local", CancellationToken.None);
+        Assert.False(PresentationModel.BuildActivity(controller.State, false).Versions);
+    }
+
     private static WorkspaceController Controller(TestWorkspace ws, IPackageCatalog catalog, FakeSdk? sdk = null) =>
         new(new FakeDiscovery(new Workspace(ws.Root, null, [])), sdk ?? new FakeSdk(), catalog, new FakeMetadata(), new FakeOperations());
 

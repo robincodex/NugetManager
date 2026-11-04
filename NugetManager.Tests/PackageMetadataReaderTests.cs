@@ -38,7 +38,7 @@ public class PackageMetadataReaderTests
         ws.WriteNuGetConfig($"""<add key="second" value="{second}" />""");
         var details = await Reader(ws).ReadAsync(WorkspaceOf(ws), "Example.Json", "1.0.0", "second", CancellationToken.None);
         Assert.Equal("from second", details.Description);
-        Assert.Equal("本地包源 second", details.Origin);
+        Assert.Equal("本地包源 second", TestMessages.Zh(details.Origin));
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class PackageMetadataReaderTests
 
         Assert.Equal("JSON helpers", details.Description);
         Assert.Equal("Contoso", details.Authors);
-        Assert.Equal("Apache-2.0", details.License);
+        Assert.Equal("Apache-2.0", TestMessages.Zh(details.License));
         Assert.Equal(new Uri("https://example.test/json"), details.ProjectUrl);
         Assert.Contains("net10.0", details.Frameworks);
         Assert.Contains("netstandard2.0", details.Frameworks);
@@ -149,7 +149,7 @@ public class PackageMetadataReaderTests
         Assert.DoesNotContain(handler.Requests, u => u.Host == "private.example.test");
         Assert.Contains(details.Diagnostics, d => d.SourceName == "private" && d.Code == "AuthRequired");
         Assert.Contains(details.Diagnostics, d => d.SourceName == "open" && d.Code == "AuthRequired");
-        Assert.DoesNotContain(details.Diagnostics, d => d.Message.Contains("hunter2"));
+        Assert.DoesNotContain(details.Diagnostics, d => TestMessages.Zh(d.Message)!.Contains("hunter2"));
         Assert.Null(details.Description);
     }
 
@@ -213,7 +213,7 @@ public class PackageMetadataReaderTests
         var missing = await Reader(ws).ReadAsync(WorkspaceOf(ws), "Example.Nope", "1.0.0", "local", CancellationToken.None);
 
         Assert.Null(details.Authors);
-        Assert.Null(details.License);
+        Assert.Null(TestMessages.Zh(details.License));
         Assert.Null(details.ProjectUrl);
         Assert.Null(missing.Description);
         Assert.Empty(missing.Frameworks);

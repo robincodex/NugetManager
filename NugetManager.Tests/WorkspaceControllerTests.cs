@@ -95,7 +95,7 @@ internal sealed class FakeOperations : IPackageOperations
         });
     }
 
-    public Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<string> progress, CancellationToken ct) =>
+    public Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<UiMessage> progress, CancellationToken ct) =>
         Execute?.Invoke(plan, ct) ?? Task.FromResult(new OperationResult(OperationStatus.Succeeded, null, []));
 }
 
@@ -357,7 +357,7 @@ public class WorkspaceControllerTests
         await h.Controller.OpenAsync(Root, null, CancellationToken.None);
 
         Assert.False(h.Controller.State.UpdatesComplete);
-        Assert.Contains(h.Controller.State.Diagnostics, d => d.Message.Contains("network down"));
+        Assert.Contains(h.Controller.State.Diagnostics, d => TestMessages.Zh(d.Message)!.Contains("network down"));
         Assert.NotEmpty(h.Controller.State.Installed);
     }
 
@@ -404,7 +404,7 @@ public class WorkspaceControllerTests
 
         Assert.Equal(OperationStatus.Succeeded, state.LastOperation!.Status);
         Assert.NotEqual(WorkspaceStatus.Failed, state.Status);
-        Assert.Contains("操作成功", state.StatusMessage);
+        Assert.Contains("操作成功", TestMessages.Zh(state.StatusMessage));
         Assert.False(state.UpdatesComplete);
     }
 
@@ -419,7 +419,7 @@ public class WorkspaceControllerTests
         await h.Controller.ExecuteConfirmedAsync(plan, CancellationToken.None);
 
         Assert.Equal(WorkspaceStatus.RecoveryRequired, h.Controller.State.Status);
-        Assert.Contains("boom", h.Controller.State.Error);
+        Assert.Contains("boom", TestMessages.Zh(h.Controller.State.Error));
     }
 
     [Fact]

@@ -7,7 +7,7 @@ namespace NugetManager.Presentation;
 
 internal sealed record PackageLinkIdentity(string WorkspaceDirectory, string PackageId, string Version, string? SourceName);
 internal sealed record PackageLinks(Uri? NuGetPage, Uri? GitHubRepository);
-internal sealed record PackageLinkState(PackageLinkIdentity? Identity, PackageLinks Links, bool Loading, string? Error);
+internal sealed record PackageLinkState(PackageLinkIdentity? Identity, PackageLinks Links, bool Loading, UiMessage? Error);
 
 internal static partial class PackageLinkResolver
 {
@@ -56,9 +56,9 @@ internal sealed class ExternalLinkOpener : IExternalLinkOpener
 {
     public void Open(Uri uri)
     {
-        if (!PackageLinkResolver.IsWebUri(uri)) throw new ArgumentException("Only absolute HTTP(S) links without credentials can be opened.", nameof(uri));
+        if (!PackageLinkResolver.IsWebUri(uri)) throw UiErrors.Argument(new UiMessage(TextKey.InvalidWebLink), nameof(uri));
         using var process = Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true })
-            ?? throw new IOException("The system browser did not start.");
+            ?? throw UiErrors.IO(new UiMessage(TextKey.BrowserDidNotStart));
     }
 }
 
@@ -81,7 +81,7 @@ internal sealed class PackageLinkMenu(IPackageMetadataReader metadata, IExternal
             var details = await metadata.ReadAsync(workspace, identity.PackageId, identity.Version, identity.SourceName, pending.Token);
             if (generation == Interlocked.Read(ref _generation))
                 Set(new(identity, PackageLinkResolver.Resolve(identity, details), false,
-                    details.Diagnostics.Count == 0 ? null : string.Join(Environment.NewLine, details.Diagnostics.Select(d => d.Message))));
+                    details.Diagnostics.Count == 0 ? null : UiMessage.Join(Environment.NewLine, details.Diagnostics.Select(d => d.Message))));
         }
         catch (OperationCanceledException) when (pending.IsCancellationRequested)
         {
@@ -89,7 +89,7 @@ internal sealed class PackageLinkMenu(IPackageMetadataReader metadata, IExternal
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            if (generation == Interlocked.Read(ref _generation)) Set(new(identity, new(null, null), false, ex.Message));
+            if (generation == Interlocked.Read(ref _generation)) Set(new(identity, new(null, null), false, UiMessage.FromException(ex)));
         }
         finally
         {
@@ -99,7 +99,7 @@ internal sealed class PackageLinkMenu(IPackageMetadataReader metadata, IExternal
 
     public Task OpenAsync(Uri uri)
     {
-        if (!PackageLinkResolver.IsWebUri(uri)) return Task.FromException(new ArgumentException("Only absolute HTTP(S) links can be opened.", nameof(uri)));
+        if (!PackageLinkResolver.IsWebUri(uri)) return Task.FromException(UiErrors.Argument(new UiMessage(TextKey.InvalidWebLink), nameof(uri)));
         try { opener.Open(uri); return Task.CompletedTask; }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         { return Task.FromException(ex); }

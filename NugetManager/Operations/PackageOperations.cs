@@ -1,3 +1,5 @@
+using NugetManager.Presentation;
+using static NugetManager.Presentation.Messages;
 using System.Xml;
 using System.Xml.Linq;
 using NugetManager.Domain;
@@ -9,7 +11,7 @@ internal interface IPackageOperations
 {
     Task<OperationPlan> PlanAsync(Workspace workspace, IReadOnlyList<PackageChange> changes, CancellationToken ct);
 
-    Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<string> progress, CancellationToken ct);
+    Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<UiMessage> progress, CancellationToken ct);
 }
 
 internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory) : IPackageOperations
@@ -19,8 +21,8 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
     public async Task<OperationPlan> PlanAsync(Workspace workspace, IReadOnlyList<PackageChange> changes, CancellationToken ct)
     {
         var evaluations = await EvaluateAllAsync(workspace, ct).ConfigureAwait(false);
-        var warnings = new List<string>();
-        var blockers = new List<string>();
+        var warnings = new List<UiMessage>();
+        var blockers = new List<UiMessage>();
         var files = new List<string>();
         var affected = new List<ProjectDescriptor>();
         var commands = new List<PlannedCommand>();
@@ -28,7 +30,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
 
         foreach (var (project, error) in evaluations.Where(e => e.Value.Error is not null).Select(e => (e.Key, e.Value.Error)))
         {
-            warnings.Add($"项目 {project.Name} 无法求值，若它也使用相关包或集中版本，本次修改可能同样影响它：{error}");
+            warnings.Add(MF(TextKey.M007, $"项目 {project.Name} 无法求值，若它也使用相关包或集中版本，本次修改可能同样影响它：{error}"));
         }
 
         foreach (var change in changes)
@@ -36,7 +38,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             var project = workspace.Projects.FirstOrDefault(p => PathUtil.AreEqual(p.Path, change.ProjectPath));
             if (project is null || !evaluations.TryGetValue(project, out var entry) || entry.Evaluation is null)
             {
-                blockers.Add($"{change.PackageId}：项目 {Path.GetFileName(change.ProjectPath)} 不在当前工作区或无法求值。");
+                blockers.Add(MF(TextKey.M008, $"{change.PackageId}：项目 {Path.GetFileName(change.ProjectPath)} 不在当前工作区或无法求值。"));
                 continue;
             }
             var evaluation = entry.Evaluation;
@@ -44,7 +46,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             if (change.Action != PackageAction.Uninstall
                 && (change.Version is null || !NuGetVersionComparer.TryParse(change.Version, out _)))
             {
-                blockers.Add($"{change.PackageId}：目标版本无效（{change.Version ?? "未指定"}）。");
+                blockers.Add(MF(TextKey.M009, $"{change.PackageId}：目标版本无效（{change.Version ?? M(TextKey.M010)}）。"));
                 continue;
             }
             AddUnique(affected, project);
@@ -56,12 +58,12 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
                 case PackageAction.Uninstall:
                     if (refs.Count == 0)
                     {
-                        blockers.Add($"{change.PackageId}：{project.Name} 没有直接引用该包。");
+                        blockers.Add(MF(TextKey.M011, $"{change.PackageId}：{project.Name} 没有直接引用该包。"));
                         continue;
                     }
                     if (refs.FirstOrDefault(r => !r.IsWritable) is { } blocked)
                     {
-                        blockers.Add($"{change.PackageId}（{project.Name}）：{blocked.WriteBlockReason}");
+                        blockers.Add(UiMessage.Join("", [change.PackageId, " (", project.Name, "): ", blocked.WriteBlockReason!]));
                         continue;
                     }
                     break;
@@ -69,8 +71,8 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
                     if (refs.Count > 0)
                     {
                         blockers.Add(refs.FirstOrDefault(r => !r.IsWritable) is { } existing
-                            ? $"{change.PackageId}（{project.Name}）：已存在引用，{existing.WriteBlockReason}"
-                            : $"{change.PackageId}：{project.Name} 已直接引用该包，请使用升级或切换版本。");
+                            ? MF(TextKey.M012, $"{change.PackageId}（{project.Name}）：已存在引用，{existing.WriteBlockReason}")
+                            : MF(TextKey.M013, $"{change.PackageId}：{project.Name} 已直接引用该包，请使用升级或切换版本。"));
                         continue;
                     }
                     break;
@@ -78,7 +80,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
 
             if (change.Action == PackageAction.Uninstall)
             {
-                commands.Add(new PlannedCommand(PackageAction.Uninstall, project.Path, change.PackageId, null, $"从 {project.Name} 卸载 {change.PackageId}"));
+                commands.Add(new PlannedCommand(PackageAction.Uninstall, project.Path, change.PackageId, null, MF(TextKey.M014, $"从 {project.Name} 卸载 {change.PackageId}")));
                 continue;
             }
 
@@ -86,12 +88,12 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             var current = refs.Select(r => r.VersionExpression).FirstOrDefault(v => v is not null);
             if (current is not null && NuGetVersionComparer.TryParse(current, out _) && NuGetVersionComparer.IsMajorChange(current, version))
             {
-                AddUnique(warnings, $"{change.PackageId} 将从 {current} 升级到 {version}，跨越主版本，可能包含不兼容变更。");
+                AddUnique(warnings, MF(TextKey.M015, $"{change.PackageId} 将从 {current} 升级到 {version}，跨越主版本，可能包含不兼容变更。"));
             }
             if (current is not null && NuGetVersionComparer.TryParse(current, out _) && !NuGetVersionComparer.IsNewer(version, current)
                 && !string.Equals(current, version, StringComparison.OrdinalIgnoreCase))
             {
-                AddUnique(warnings, $"{change.PackageId} 将从 {current} 降级到 {version}。");
+                AddUnique(warnings, MF(TextKey.M016, $"{change.PackageId} 将从 {current} 降级到 {version}。"));
             }
 
             var centralFile = evaluation.CentralPackageManagement
@@ -100,14 +102,14 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
                 : null;
             if (evaluation.CentralPackageManagement && centralFile is null)
             {
-                blockers.Add($"{change.PackageId}（{project.Name}）：启用了集中版本管理，但找不到 Directory.Packages.props。");
+                blockers.Add(MF(TextKey.M017, $"{change.PackageId}（{project.Name}）：启用了集中版本管理，但找不到 Directory.Packages.props。"));
                 continue;
             }
 
             if (centralFile is null)
             {
                 commands.Add(new PlannedCommand(change.Action, project.Path, change.PackageId, version,
-                    $"{Verb(change.Action)} {project.Name} 的 {change.PackageId} → {version}"));
+                    MF(TextKey.M018, $"{Verb(change.Action)} {project.Name} 的 {change.PackageId} → {version}")));
                 continue;
             }
 
@@ -127,13 +129,13 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
                 .Select(p => p.Name).ToList();
             if (outside.Count > 0)
             {
-                AddUnique(warnings, $"{change.PackageId} 的版本由 {Path.GetFileName(centralFile)} 集中管理，修改还会影响：{string.Join("、", outside)}。");
+                AddUnique(warnings, MF(TextKey.M019, $"{change.PackageId} 的版本由 {Path.GetFileName(centralFile)} 集中管理，修改还会影响：{string.Join("、", outside)}。"));
             }
 
             if (change.Action == PackageAction.Install)
             {
                 commands.Add(new PlannedCommand(PackageAction.Install, project.Path, change.PackageId, version,
-                    $"在 {project.Name} 安装 {change.PackageId} {version}（集中版本）"));
+                    MF(TextKey.M020, $"在 {project.Name} 安装 {change.PackageId} {version}（集中版本）")));
                 // Later upgrades of the same entry must not write a second, conflicting version.
                 centralCommands[(Path.GetFullPath(centralFile).ToUpperInvariant(), change.PackageId.ToUpperInvariant())] = commands.Count - 1;
                 continue;
@@ -146,14 +148,14 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
                 if (!string.Equals(existing.Version, version, StringComparison.OrdinalIgnoreCase))
                 {
                     var max = NuGetVersionComparer.Instance.Compare(version, existing.Version) > 0 ? version : existing.Version!;
-                    AddUnique(warnings, $"{change.PackageId} 共享同一集中版本条目，所选目标版本不同，统一使用 {max}。");
-                    commands[index] = existing with { Version = max, Description = $"更新集中版本 {change.PackageId} → {max}" };
+                    AddUnique(warnings, MF(TextKey.M021, $"{change.PackageId} 共享同一集中版本条目，所选目标版本不同，统一使用 {max}。"));
+                    commands[index] = existing with { Version = max, Description = MF(TextKey.M022, $"更新集中版本 {change.PackageId} → {max}") };
                 }
                 continue;
             }
             centralCommands[key] = commands.Count;
             commands.Add(new PlannedCommand(PackageAction.Upgrade, project.Path, change.PackageId, version,
-                $"更新集中版本 {change.PackageId} → {version}（{Path.GetFileName(centralFile)}）"));
+                MF(TextKey.M023, $"更新集中版本 {change.PackageId} → {version}（{Path.GetFileName(centralFile)}）")));
         }
 
         var lockFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -187,28 +189,28 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
         };
     }
 
-    public async Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<string> progress, CancellationToken ct)
+    public async Task<OperationResult> ExecuteAsync(OperationPlan plan, IProgress<UiMessage> progress, CancellationToken ct)
     {
         if (plan.Blockers.Count > 0)
         {
-            throw new InvalidOperationException("修改预览中存在阻止项，不能执行：\n" + string.Join("\n", plan.Blockers));
+            throw UiErrors.InvalidOperation(M(TextKey.M024) + UiMessage.Join("\n", plan.Blockers));
         }
         if (plan.Commands.Count == 0)
         {
-            throw new InvalidOperationException("没有需要执行的修改。");
+            throw UiErrors.InvalidOperation(M(TextKey.M025));
         }
         foreach (var (file, hash) in plan.Fingerprints)
         {
             if (await FingerprintAsync(file, ct).ConfigureAwait(false) != hash)
             {
-                throw new PlanStaleException($"{Path.GetFileName(file)} 在预览后被修改，请重新预览后再确认。");
+                throw new PlanStaleException(MF(TextKey.M026, $"{Path.GetFileName(file)} 在预览后被修改，请重新预览后再确认。"));
             }
         }
 
-        progress.Report("正在备份将被修改的文件…");
+        progress.Report(M(TextKey.M027));
         await using var transaction = await FileTransaction.BeginAsync(plan.Files, RecoveryDirectory, ct,
             (path, before, after) => IsExpectedChange(plan, path, before, after),
-            string.Join("；", plan.Commands.Select(c => c.Description))).ConfigureAwait(false);
+            UiMessage.Join("; ", plan.Commands.Select(c => c.Description))).ConfigureAwait(false);
         try
         {
             foreach (var command in plan.Commands)
@@ -226,7 +228,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             }
             await RecordAsync(transaction, ct).ConfigureAwait(false);
 
-            progress.Report($"正在还原 {plan.AffectedProjects.Count} 个受影响项目…");
+            progress.Report(MF(TextKey.M028, $"正在还原 {plan.AffectedProjects.Count} 个受影响项目…"));
             ct.ThrowIfCancellationRequested();
             await transaction.BeginWriteWindowAsync().ConfigureAwait(false);
             await sdk.RestoreAsync(plan.AffectedProjects, lockedMode: false, ct).ConfigureAwait(false);
@@ -234,13 +236,13 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             ct.ThrowIfCancellationRequested();
 
             await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
-            progress.Report("修改已完成。");
+            progress.Report(M(TextKey.M029));
             return new OperationResult(OperationStatus.Succeeded, null, []);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            var error = ex is OperationCanceledException ? "操作已取消，已撤回本次修改。" : ex.Message;
-            progress.Report("操作失败，正在撤回…");
+            var error = ex is OperationCanceledException ? M(TextKey.M030) : UiMessage.FromException(ex);
+            progress.Report(M(TextKey.M031));
             var recovery = await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             var restored = recovery.All(r => r.Status == RecoveryStatus.Restored);
             if (restored)
@@ -251,7 +253,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
                 }
                 catch (Exception restoreError) when (restoreError is SdkCommandException or SdkOutputException or ProcessTimeoutException)
                 {
-                    error += $"\n文件已撤回，但重新还原原配置失败，请手动执行 dotnet restore：{restoreError.Message}";
+                    error += MF(TextKey.M032, $"\n文件已撤回，但重新还原原配置失败，请手动执行 dotnet restore：{UiMessage.FromException(restoreError)}");
                 }
             }
             return new OperationResult(restored ? OperationStatus.RolledBack : OperationStatus.RecoveryRequired, error, recovery)
@@ -266,7 +268,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
         await transaction.RecordOwnedChangesAsync(CancellationToken.None).ConfigureAwait(false);
         if (transaction.HasConflicts)
         {
-            throw new IOException("执行期间检测到其他程序修改了相关文件，已停止并撤回。");
+            throw UiErrors.IO(M(TextKey.M033));
         }
         ct.ThrowIfCancellationRequested();
     }
@@ -310,9 +312,9 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
         }
     }
 
-    private async Task<Dictionary<ProjectDescriptor, (ProjectEvaluation? Evaluation, string? Error)>> EvaluateAllAsync(Workspace workspace, CancellationToken ct)
+    private async Task<Dictionary<ProjectDescriptor, (ProjectEvaluation? Evaluation, UiMessage? Error)>> EvaluateAllAsync(Workspace workspace, CancellationToken ct)
     {
-        var results = new (ProjectEvaluation? Evaluation, string? Error)[workspace.Projects.Count];
+        var results = new (ProjectEvaluation? Evaluation, UiMessage? Error)[workspace.Projects.Count];
         using var gate = new SemaphoreSlim(4);
         await Task.WhenAll(workspace.Projects.Select(async (project, i) =>
         {
@@ -323,7 +325,7 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
             }
             catch (Exception ex) when (ex is SdkCommandException or SdkOutputException or ProcessTimeoutException)
             {
-                results[i] = (null, ex.Message);
+                results[i] = (null, UiMessage.FromException(ex));
             }
             finally
             {
@@ -336,11 +338,11 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
     private static async Task<string> FingerprintAsync(string path, CancellationToken ct) =>
         FileTransaction.Hash(File.Exists(path) ? await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false) : null);
 
-    private static string Verb(PackageAction action) => action switch
+    private static UiMessage Verb(PackageAction action) => action switch
     {
-        PackageAction.Install => "安装到",
-        PackageAction.Uninstall => "卸载",
-        _ => "升级",
+        PackageAction.Install => M(TextKey.M034),
+        PackageAction.Uninstall => M(TextKey.M035),
+        _ => M(TextKey.M036),
     };
 
     private static void AddUnique(List<string> list, string value)
@@ -349,6 +351,12 @@ internal sealed class PackageOperations(ISdkClient sdk, string recoveryDirectory
         {
             list.Add(value);
         }
+
+    }
+
+    private static void AddUnique(List<UiMessage> list, UiMessage value)
+    {
+        if (!list.Contains(value)) list.Add(value);
     }
 
     private static void AddUnique(List<ProjectDescriptor> list, ProjectDescriptor project)
