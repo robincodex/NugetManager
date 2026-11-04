@@ -172,6 +172,11 @@ internal sealed class WorkspaceController(
             {
                 await SearchAsync(State.SearchQuery, 0, ct).ConfigureAwait(false);
             }
+            if (generation == Interlocked.Read(ref _loadGeneration) && State.SelectedPackageId is { } packageId)
+            {
+                Publish(s => s with { Versions = null, VersionsLoading = true });
+                await LoadVersionsAsync(workspace, packageId, State.SelectedPackageSourceName, ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {

@@ -417,7 +417,7 @@ internal sealed partial class SdkClient : ISdkClient
         {
             args.Add("--include-prerelease");
         }
-        var result = await RunRawAsync(Path.GetDirectoryName(project.Path)!, args, LongTimeout, ct).ConfigureAwait(false);
+        var result = await RunFreshQueryAsync(Path.GetDirectoryName(project.Path)!, args, ct).ConfigureAwait(false);
         var output = TryParse(result.Stdout, SdkJsonContext.Default.PackageListOutput);
         if (output is null)
         {
@@ -451,7 +451,7 @@ internal sealed partial class SdkClient : ISdkClient
         {
             args.AddRange(["--source", source]);
         }
-        var result = await RunRawAsync(workingDirectory, args, LongTimeout, ct).ConfigureAwait(false);
+        var result = await RunFreshQueryAsync(workingDirectory, args, ct).ConfigureAwait(false);
         var output = TryParse(result.Stdout, SdkJsonContext.Default.SearchOutput);
         if (output is null)
         {
@@ -519,6 +519,25 @@ internal sealed partial class SdkClient : ISdkClient
     {
         var workDir = Directory.Exists(directory) ? directory : Path.GetTempPath();
         return _runner.RunAsync(new ProcessRequest("dotnet", args, workDir, timeout, _environment), ct);
+    }
+
+    private async Task<ProcessResult> RunFreshQueryAsync(string directory, IReadOnlyList<string> args, CancellationToken ct)
+    {
+        // list/search have no --no-http-cache option. Isolate metadata queries without clearing
+        // shared NuGet caches or changing the package cache, source configuration or credentials.
+        var cache = Directory.CreateTempSubdirectory("NugetManager-query-");
+        try
+        {
+            var environment = _environment is null
+                ? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string?>(_environment, StringComparer.OrdinalIgnoreCase);
+            environment["NUGET_HTTP_CACHE_PATH"] = cache.FullName;
+            return await _runner.RunAsync(new ProcessRequest("dotnet", args, directory, LongTimeout, environment), ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            cache.Delete(recursive: true);
+        }
     }
 
     private static T? TryParse<T>(string text, JsonTypeInfo<T> info) where T : class

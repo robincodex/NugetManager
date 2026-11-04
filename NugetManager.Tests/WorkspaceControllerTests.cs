@@ -101,6 +101,23 @@ internal sealed class FakeOperations : IPackageOperations
 
 public class WorkspaceControllerTests
 {
+    [Fact]
+    public async Task RefreshReloadsSelectedPackageVersionsWithoutChangingSelectedVersion()
+    {
+        var h = Create();
+        await h.Controller.OpenAsync(Root, null, CancellationToken.None);
+        h.Catalog.Versions = _ => Task.FromResult(new PackageVersions("Example.Json", ["1.0.0"], []));
+        await h.Controller.SelectPackageAsync("Example.Json", "1.0.0", null, CancellationToken.None);
+        Assert.Equal(["1.0.0"], h.Controller.State.Versions!.Versions);
+        h.Catalog.Versions = _ => Task.FromResult(new PackageVersions("Example.Json", ["2.0.0", "1.0.0"], []));
+
+        await h.Controller.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(["2.0.0", "1.0.0"], h.Controller.State.Versions!.Versions);
+        Assert.Equal("1.0.0", h.Controller.State.SelectedVersion);
+        Assert.False(h.Controller.State.VersionsLoading);
+    }
+
     [Theory]
     [InlineData("refresh")]
     [InlineData("prerelease")]
