@@ -42,6 +42,7 @@ public class NativeWindowBindingTests
 
     private static async Task CheckBindings(Window window, FakeMetadata metadata)
     {
+        Assert.NotNull(window.Icon);
         var state = new WorkspaceViewState
         {
             Workspace = new("C:\\fixture", null, []),

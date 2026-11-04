@@ -82,7 +82,8 @@ internal sealed class MainWindow : Window
         Commands.Register<Uri>(OpenNuGetCommand, uri => Fire(() => _links.OpenAsync(uri)));
         Commands.Register<Uri>(OpenGitHubCommand, uri => Fire(() => _links.OpenAsync(uri)));
         _state = controller.State;
-        this.Title(L(TextKey.AppTitle)).Resizable(1280, 800, minWidth: 980, minHeight: 560);
+        this.Title(L(TextKey.AppTitle)).Icon(IconSource.FromResource<MainWindow>("NugetManager.logo.ico"))
+            .Resizable(1280, 800, minWidth: 980, minHeight: 560);
         _controller.StateChanged += OnStateChanged;
         this.OnLoaded(() =>
         {
