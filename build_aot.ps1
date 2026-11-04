@@ -1,0 +1,1 @@
+dotnet publish ./NugetManager/NugetManager.csproj -r win-x64 -o out
