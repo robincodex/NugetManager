@@ -95,6 +95,10 @@ internal sealed record PackageDetails(
 {
     /// <summary>Where the metadata came from (cache, local feed, or remote source).</summary>
     public string? Origin { get; init; }
+    public Uri? RepositoryUrl { get; init; }
+    public Uri? PackagePageUrl { get; init; }
+    public string? SourceName { get; init; }
+    public string? SourceLocation { get; init; }
 }
 
 internal sealed record PackageVersions(string PackageId, IReadOnlyList<string> Versions, IReadOnlyList<SourceDiagnostic> Diagnostics)

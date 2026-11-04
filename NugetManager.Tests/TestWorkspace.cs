@@ -101,7 +101,7 @@ internal sealed class TestWorkspace : IAsyncDisposable
     /// <summary>Creates a minimal package in the local feed.</summary>
     public string AddPackage(string id, string version, string[]? frameworks = null,
         (string Framework, string Id, string Range)[]? dependencies = null, string? description = null,
-        string? authors = "Test Author", string? license = "MIT", string? projectUrl = null)
+        string? authors = "Test Author", string? license = "MIT", string? projectUrl = null, string? repositoryUrl = null)
     {
         frameworks ??= ["net8.0", "net10.0"];
         var path = Path.Combine(FeedDirectory, $"{id}.{version}.nupkg");
@@ -127,6 +127,7 @@ internal sealed class TestWorkspace : IAsyncDisposable
                 <description>{description ?? "Test package " + id}</description>
                 {(license is null ? "" : $"<license type=\"expression\">{license}</license>")}
                 {(projectUrl is null ? "" : $"<projectUrl>{projectUrl}</projectUrl>")}
+                {(repositoryUrl is null ? "" : $"<repository type=\"git\" url=\"{repositoryUrl}\" />")}
                 <dependencies>{groups}</dependencies>
               </metadata>
             </package>

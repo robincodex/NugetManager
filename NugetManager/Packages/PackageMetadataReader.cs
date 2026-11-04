@@ -46,8 +46,9 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
         var cacheDir = Path.Combine(gpf, idLower, versionLower);
         var cachedNuspec = Path.Combine(cacheDir, idLower + ".nuspec");
         var cacheAllowed = sourceName is null;
+        NuGetSource? cachedOrigin = null;
         var cacheMetadata = Path.Combine(cacheDir, ".nupkg.metadata");
-        if (!cacheAllowed && File.Exists(cacheMetadata))
+        if (File.Exists(cacheMetadata))
         {
             try
             {
@@ -55,9 +56,10 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
                 using var metadata = await JsonDocument.ParseAsync(metadataStream, cancellationToken: ct).ConfigureAwait(false);
                 var cachedSource = metadata.RootElement.TryGetProperty("source", out var origin) && origin.ValueKind == JsonValueKind.String
                     ? origin.GetString() : null;
-                cacheAllowed = cachedSource is not null && settings.SourcesFor(packageId).Any(s =>
-                    string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(s.Location.TrimEnd('/', '\\'), cachedSource.TrimEnd('/', '\\'), StringComparison.OrdinalIgnoreCase));
+                cachedOrigin = cachedSource is null ? null : settings.SourcesFor(packageId).FirstOrDefault(s =>
+                    string.Equals(s.Location.TrimEnd('/', '\\'), cachedSource.TrimEnd('/', '\\'), StringComparison.OrdinalIgnoreCase));
+                cacheAllowed = sourceName is null || cachedOrigin is not null
+                    && string.Equals(cachedOrigin.Name, sourceName, StringComparison.OrdinalIgnoreCase);
             }
             catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
             {
@@ -74,7 +76,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             var cached = Parse(packageId, version, stream, frameworks, "全局包缓存", "", diagnostics);
             if (cached is not null)
             {
-                return cached;
+                return cached with { SourceName = cachedOrigin?.Name, SourceLocation = cachedOrigin?.Location };
             }
         }
 
@@ -98,7 +100,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
                 : ReadLocal(source, packageId, version, idLower, versionLower, diagnostics);
             if (details is not null)
             {
-                return details;
+                return details with { SourceName = source.Name, SourceLocation = source.Location };
             }
         }
 
@@ -279,6 +281,8 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             : Value("licenseUrl");
         Uri? projectUrl = Value("projectUrl") is { } url && Uri.TryCreate(url, UriKind.Absolute, out var parsed)
             && (parsed.Scheme == Uri.UriSchemeHttps || parsed.Scheme == Uri.UriSchemeHttp) ? parsed : null;
+        var repositoryValue = (string?)metadata.Elements().FirstOrDefault(e => e.Name.LocalName == "repository")?.Attribute("url");
+        Uri? repositoryUrl = Uri.TryCreate(repositoryValue, UriKind.Absolute, out var repository) ? repository : null;
 
         var groups = new List<DependencyGroup>();
         if (metadata.Elements().FirstOrDefault(e => e.Name.LocalName == "dependencies") is { } deps)
@@ -301,6 +305,7 @@ internal sealed partial class PackageMetadataReader(HttpClient http, string? glo
             string.IsNullOrEmpty(license) ? null : license, projectUrl, allFrameworks, groups, diagnostics)
         {
             Origin = origin,
+            RepositoryUrl = repositoryUrl,
         };
     }
 

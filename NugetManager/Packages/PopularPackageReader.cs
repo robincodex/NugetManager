@@ -13,12 +13,15 @@ internal interface IPopularPackageReader
 
 internal sealed class PopularPackageReader(HttpClient http) : IPopularPackageReader
 {
+    internal static bool IsOfficialSource(string location) =>
+        Uri.TryCreate(location, UriKind.Absolute, out var uri)
+        && uri.Scheme == "https" && string.Equals(uri.Host, "api.nuget.org", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(uri.AbsolutePath, "/v3/index.json", StringComparison.OrdinalIgnoreCase)
+        && uri.Query.Length == 0 && uri.Fragment.Length == 0 && uri.UserInfo.Length == 0 && uri.IsDefaultPort;
+
     public async Task<PopularReadResult> ReadAsync(NuGetSource source, int take, bool includePrerelease, CancellationToken ct)
     {
-        if (source.HasCredentials || !Uri.TryCreate(source.Location, UriKind.Absolute, out var uri)
-            || uri.Scheme != "https" || !string.Equals(uri.Host, "api.nuget.org", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(uri.AbsolutePath, "/v3/index.json", StringComparison.OrdinalIgnoreCase)
-            || uri.Query.Length > 0 || uri.UserInfo.Length > 0 || !uri.IsDefaultPort)
+        if (source.HasCredentials || !IsOfficialSource(source.Location))
         {
             return new PopularReadResult(false, [], []);
         }
