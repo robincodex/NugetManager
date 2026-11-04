@@ -1,5 +1,7 @@
 # NuGet Package Manager
 
+[简体中文](README-zh.md)
+
 A Windows desktop NuGet package manager built with .NET 10, Native AOT, and [Aprillz.MewUI](https://www.nuget.org/packages/Aprillz.MewUI).
 
 Why build this tool?
