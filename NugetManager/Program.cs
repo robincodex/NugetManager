@@ -38,7 +38,7 @@ static class Program
         var recoveryDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NugetManager", "recovery");
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("NugetManager/0.0.1");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("NugetManager/0.0.3");
 
         var sdk = new SdkClient(new ProcessRunner());
         var controller = new WorkspaceController(
