@@ -91,6 +91,7 @@ public class NativeWindowBindingTests
                 var languageBounds = Field<ComboBox>(window, "_themePicker").Bounds;
                 Assert.True(quickMode.Bounds.X + quickMode.Bounds.Width <= languageBounds.X, "Quick mode must not overlap theme controls.");
                 CheckActionColors(window, state);
+                CheckOperationActivity(window, state, language);
                 var tabs = Field<SegmentedControl>(window, "_tabs");
                 tabs.Measure(new Size(650, 50));
                 tabs.Arrange(new Rect(0, 0, 650, 50));
@@ -164,6 +165,41 @@ public class NativeWindowBindingTests
             await Task.Delay(5, timeout.Token);
         Assert.All(menu.Items.Cast<MenuItem>(), item => Assert.False(item.IsEnabled));
         Assert.Null(Field<PackageLinkMenu>(window, "_links").State.Identity);
+    }
+
+    private static void CheckOperationActivity(Window window, WorkspaceViewState state, UiLanguage language)
+    {
+        var expected = language switch
+        {
+            UiLanguage.SimplifiedChinese => "正在更新依赖，请耐心等待…",
+            UiLanguage.Korean => "종속성을 업데이트하는 중입니다. 잠시 기다려 주세요…",
+            UiLanguage.Russian => "Обновление зависимостей, пожалуйста, подождите…",
+            _ => "Updating dependencies, please wait…",
+        };
+        foreach (var browse in new[] { false, true })
+        {
+            Set(window, "_browseMode", browse);
+            foreach (var applying in new[] { false, true })
+            {
+                Set(window, "_applying", applying);
+                var active = state with { IsBusy = !applying, Status = applying ? WorkspaceStatus.Ready : WorkspaceStatus.Writing };
+                Invoke(window, "Render", active);
+                var middle = Field<StackPanel>(window, "_middle");
+                var line = Assert.IsType<StackPanel>(middle.Children[0]);
+                Assert.True(Assert.IsType<ProgressRing>(line.Children[0]).IsActive);
+                Assert.Equal(expected, Assert.IsType<TextBlock>(line.Children[1]).Text);
+                Set(window, "_applying", false);
+                foreach (var status in new[] { WorkspaceStatus.Ready, WorkspaceStatus.Failed, WorkspaceStatus.Cancelled })
+                {
+                    Invoke(window, "Render", state with { Status = status });
+                    Assert.False(Field<ProgressRing>(window, "_installedRing").IsActive);
+                    Assert.DoesNotContain(middle.Children.OfType<StackPanel>(),
+                        panel => panel.Children.OfType<TextBlock>().Any(text => text.Text == expected));
+                }
+            }
+        }
+        Set(window, "_browseMode", true);
+        Invoke(window, "Render", state);
     }
 
     private static void CheckActionColors(Window window, WorkspaceViewState state)
@@ -252,6 +288,7 @@ public class NativeWindowBindingTests
         Func<CancellationToken, Task<OperationPlan>> pending = _ => pendingPreview.Task;
         var applying = (Task)Invoke(window, "ApplyAsync", pending)!;
         Assert.False(Field<CheckBox>(window, "_quickMode").IsEnabled);
+        Assert.True(Field<ProgressRing>(window, "_installedRing").IsActive);
         var duplicatePreviewCalls = 0;
         Func<CancellationToken, Task<OperationPlan>> duplicate = _ =>
         {
@@ -263,6 +300,7 @@ public class NativeWindowBindingTests
         pendingPreview.SetException(new InvalidOperationException("preview failed"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => applying);
         Assert.True(Field<CheckBox>(window, "_quickMode").IsEnabled);
+        Assert.False(Field<ProgressRing>(window, "_installedRing").IsActive);
         operations.Execute = (_, _) =>
         {
             executions++;
