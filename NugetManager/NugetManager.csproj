@@ -15,6 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Update="FluentIcons.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="logo.ico" />
     <TrimmerRootDescriptor Include="Trimming.rd.xml" />
   </ItemGroup>
