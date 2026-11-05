@@ -366,6 +366,13 @@ public class NativeWindowBindingTests
         page.Content.Measure(new Size(1280, 720));
         page.Content.Arrange(new Rect(0, 0, 1280, 720));
         Assert.InRange(rows.DesiredSize.Width, 1035, 1256);
+        foreach (var button in row.Children.OfType<Button>())
+        {
+            var icon = Assert.IsType<PathShape>(button.Content);
+            Assert.Equal(new Rect(0, 0, 16, 16), icon.ViewBox);
+            Assert.InRange(Math.Abs(icon.Bounds.X + icon.Bounds.Width / 2 - button.Bounds.X - button.Bounds.Width / 2), 0, 0.5);
+            Assert.InRange(Math.Abs(icon.Bounds.Y + icon.Bounds.Height / 2 - button.Bounds.Y - button.Bounds.Height / 2), 0, 0.5);
+        }
         editable = false;
         page.Update(Path.GetDirectoryName(local));
         row = Assert.IsType<Grid>(Assert.IsType<Border>(rows.Children[1]).Child);

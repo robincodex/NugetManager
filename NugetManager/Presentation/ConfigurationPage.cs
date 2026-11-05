@@ -9,6 +9,9 @@ namespace NugetManager.Presentation;
 internal sealed class ConfigurationPage(Window owner, Func<UiMessage, string> format, Func<bool> canEdit,
     Func<Task> saved, Action changed)
 {
+    // Microsoft Fluent UI System Icons, MIT license: FluentIcons.LICENSE.txt.
+    private const string EditRegular = "M14.236 1.76406C13.2123 0.74037 11.5525 0.740369 10.5289 1.76406L2.65722 9.63568C2.28304 10.0099 2.01623 10.4777 1.88467 10.9902L1.01571 14.3757C0.971767 14.5469 1.02148 14.7286 1.14646 14.8536C1.27144 14.9785 1.45312 15.0282 1.62432 14.9843L5.00978 14.1153C5.52234 13.9838 5.99015 13.717 6.36433 13.3428L14.236 5.47117C15.2596 4.44748 15.2596 2.78775 14.236 1.76406ZM11.236 2.47117C11.8691 1.838 12.8957 1.838 13.5288 2.47117C14.162 3.10433 14.162 4.13089 13.5288 4.76406L12.75 5.54288L10.4571 3.24999L11.236 2.47117ZM9.75002 3.9571L12.0429 6.24999L5.65722 12.6357C5.40969 12.8832 5.10023 13.0597 4.76117 13.1467L2.19447 13.8055L2.85327 11.2388C2.9403 10.8998 3.1168 10.5903 3.36433 10.3428L9.75002 3.9571Z";
+    private const string DismissCircleRegular = "M2 8C2 4.68629 4.68629 2 8 2C11.3137 2 14 4.68629 14 8C14 11.3137 11.3137 14 8 14C4.68629 14 2 11.3137 2 8ZM8 1C4.13401 1 1 4.13401 1 8C1 11.866 4.13401 15 8 15C11.866 15 15 11.866 15 8C15 4.13401 11.866 1 8 1ZM6.35355 5.64645C6.15829 5.45118 5.84171 5.45118 5.64645 5.64645C5.45118 5.84171 5.45118 6.15829 5.64645 6.35355L7.29289 8L5.64645 9.64645C5.45118 9.84171 5.45118 10.1583 5.64645 10.3536C5.84171 10.5488 6.15829 10.5488 6.35355 10.3536L8 8.70711L9.64645 10.3536C9.84171 10.5488 10.1583 10.5488 10.3536 10.3536C10.5488 10.1583 10.5488 9.84171 10.3536 9.64645L8.70711 8L10.3536 6.35355C10.5488 6.15829 10.5488 5.84171 10.3536 5.64645C10.1583 5.45118 9.84171 5.45118 9.64645 5.64645L8 7.29289L6.35355 5.64645Z";
     private readonly DockPanel _content = new();
     private readonly ComboBox _files = new();
     private readonly Button _open = new();
@@ -132,8 +135,8 @@ internal sealed class ConfigurationPage(Window owner, Func<UiMessage, string> fo
         var active = new CheckBox().IsChecked(source.Enabled).Center()
             .IsEnabled(enabled).OnCheckedChanged(value => Run(() => SaveAsync(snapshot, source,
                 source with { Enabled = value == true }, null, false)));
-        var edit = IconButton(GlyphKind.ChevronRight, TextKey.ConfigEdit, enabled, () => EditAsync(snapshot, source));
-        var delete = IconButton(GlyphKind.Minus, TextKey.ConfigDelete, enabled, () => DeleteAsync(snapshot, source));
+        var edit = IconButton(EditRegular, TextKey.ConfigEdit, enabled, () => EditAsync(snapshot, source));
+        var delete = IconButton(DismissCircleRegular, TextKey.ConfigDelete, enabled, () => DeleteAsync(snapshot, source));
         var grid = TableGrid().Children(
             Cell(source.Name).Column(0), Cell(source.Location).Column(1), insecure.Column(2), active.Column(3),
             Cell(snapshot.Path + (snapshot.IsReadOnly ? " (" + L(TextKey.ConfigReadOnly) + ")" : "")).Column(4),
@@ -226,9 +229,10 @@ internal sealed class ConfigurationPage(Window owner, Func<UiMessage, string> fo
     private static TextBlock Text(string text) => new TextBlock().Text(text).TextWrapping(TextWrapping.Wrap).CenterVertical();
     private static TextBlock Cell(string text) =>
         new TextBlock().Text(text).TextTrimming(TextTrimming.CharacterEllipsis).ToolTip(text).CenterVertical().Margin(6, 8);
-    private Button IconButton(GlyphKind glyph, TextKey tooltip, bool enabled, Func<Task> action) =>
-        new Button().Content(new GlyphElement { Kind = glyph }.Width(16).Height(16))
-            .Width(30).Height(30).Center().ToolTip(L(tooltip)).IsEnabled(enabled).OnClick(() => Run(action));
+    private Button IconButton(string path, TextKey tooltip, bool enabled, Func<Task> action) =>
+        new Button().Content(new PathShape { ViewBox = new Rect(0, 0, 16, 16) }.Data(path)
+            .Fill(AppTheme.Current.Text).Stretch(Stretch.Uniform).Width(16).Height(16).Center())
+            .Padding(0).Width(30).Height(30).Center().ToolTip(L(tooltip)).IsEnabled(enabled).OnClick(() => Run(action));
 }
 
 internal sealed record SourceEditResult(string Path, ConfigSource Source, string? Password, bool RemoveCredentials);
