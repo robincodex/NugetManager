@@ -50,6 +50,8 @@ internal sealed class MainWindow : Window
     private readonly TextBox _searchBox = new();
     private readonly Button _openButton = new();
     private readonly Button _refreshButton = new();
+    private readonly TabControl _sections = new();
+    private ConfigurationPage? _configurationPage;
     private readonly Button _cancelButton = new();
     private readonly CheckBox _prerelease = new();
     private readonly CheckBox _quickMode = new();
@@ -326,7 +328,11 @@ internal sealed class MainWindow : Window
     {
         _surfaces.Clear();
         _openButton.Content(L(TextKey.OpenDirectory)).OnClick(() => Fire(OpenFolderAsync));
-        _refreshButton.Content(L(TextKey.Refresh)).OnClick(() => Fire(() => RunBusyAsync(ct => _controller.RefreshAsync(ct))));
+        _refreshButton.Content(L(TextKey.Refresh)).OnClick(() =>
+        {
+            if (_sections.SelectedIndex == 1) _configurationPage?.Update(_state.Workspace?.Directory, reload: true);
+            else Fire(() => RunBusyAsync(ct => _controller.RefreshAsync(ct)));
+        });
         _cancelButton.Content(L(TextKey.Cancel)).IsVisible(false).OnClick(() => _busyCts?.Cancel());
         _prerelease.Content(L(TextKey.Prerelease)).OnCheckedChanged(value =>
         {
@@ -429,10 +435,23 @@ internal sealed class MainWindow : Window
         _surfaces.Add((left, () => PaneColor));
         _surfaces.Add((right, () => PaneColor));
 
+        _configurationPage = new ConfigurationPage(this, F,
+            () => !_controller.State.IsBusy && !_applying,
+            () => RunBusyAsync(ct => _controller.RefreshAsync(ct)),
+            () => Render(_controller.State));
+        _sections.TabItems(
+            new TabItem().Header(L(TextKey.PackagesTab)).Content(
+                new Grid().Columns("240,*,400").Children(left, middle.Column(1), right.Column(2))),
+            new TabItem().Header(L(TextKey.ConfigurationTab)).Content(_configurationPage.Content));
+        _sections.OnSelectionChanged(_ =>
+        {
+            _sourcePopup.Close();
+            if (_sections.SelectedIndex == 1) _configurationPage.Update(_state.Workspace?.Directory, reload: true);
+        });
         return new DockPanel().Children(
             toolbar,
             statusBar,
-            new Grid().Columns("240,*,400").Children(left, middle.Column(1), right.Column(2)));
+            _sections);
     }
 
     private void OnStateChanged(WorkspaceViewState state)
@@ -464,6 +483,7 @@ internal sealed class MainWindow : Window
 
     private void Render(WorkspaceViewState state)
     {
+        if (_configurationPage?.IsSaving == true || _configurationPage?.IsEditing == true) state = state with { IsBusy = true };
         _state = state;
         _suppressEvents = true;
         try
@@ -481,6 +501,12 @@ internal sealed class MainWindow : Window
 
     private void RenderChrome(WorkspaceViewState state)
     {
+        if (_sections.Tabs.Count == 2)
+        {
+            _sections.Tabs[0].Header(L(TextKey.PackagesTab));
+            _sections.Tabs[1].Header(L(TextKey.ConfigurationTab));
+        }
+        if (_sections.SelectedIndex == 1) _configurationPage?.Update(state.Workspace?.Directory);
         var workspaceName = state.Workspace is { } workspace
             ? Path.GetFileName(workspace.SolutionPath ?? Path.TrimEndingDirectorySeparator(workspace.Directory)) : null;
         Title = string.IsNullOrEmpty(workspaceName) ? L(TextKey.AppTitle) : $"{L(TextKey.AppTitle)} — {workspaceName}";
@@ -1042,7 +1068,7 @@ internal sealed class MainWindow : Window
     private async Task ApplyAsync(Func<CancellationToken, Task<OperationPlan>> preview)
     {
         // Preparing the plan takes seconds; repeated clicks must not queue a second operation.
-        if (_applying)
+        if (_applying || _configurationPage?.IsSaving == true || _configurationPage?.IsEditing == true)
         {
             return;
         }

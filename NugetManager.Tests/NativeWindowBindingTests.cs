@@ -5,6 +5,7 @@ using Aprillz.MewUI.Controls;
 using NugetManager.Domain;
 using NugetManager.Presentation;
 using NugetManager.Operations;
+using NugetManager.Packages;
 
 namespace NugetManager.Tests;
 
@@ -31,6 +32,7 @@ public class NativeWindowBindingTests
                         try
                         {
                             await CheckBindings(window, metadata);
+                            await CheckConfigurationPage(window);
                             await CheckQuickMode(window, controller, operations);
                         }
                         catch (Exception ex) { failure = ex; }
@@ -82,6 +84,13 @@ public class NativeWindowBindingTests
                 Assert.Equal(40, state.Search!.NextSkip);
                 Assert.Equal(["Checked"], state.SelectedPackageIds);
                 Assert.Equal(AppLocalization.Template(TextKey.AppTitle, language) + " — fixture", window.Title);
+                var sections = Field<TabControl>(window, "_sections");
+                Assert.Equal(2, sections.Tabs.Count);
+                Assert.Equal(AppLocalization.Template(TextKey.PackagesTab, language), sections.Tabs[0].HeaderText);
+                Assert.Equal(AppLocalization.Template(TextKey.ConfigurationTab, language), sections.Tabs[1].HeaderText);
+                sections.SelectedIndex = 1;
+                Assert.Same(state, Field<WorkspaceViewState>(window, "_state"));
+                sections.SelectedIndex = 0;
                 var statusBar = Assert.IsType<Border>(Field<TextBlock>(window, "_statusText").Parent!.Parent);
                 Assert.Equal(AppTheme.Current.Header, statusBar.Background);
                 var quickMode = Field<CheckBox>(window, "_quickMode");
@@ -331,10 +340,53 @@ public class NativeWindowBindingTests
         Assert.False(Field<CheckBox>(window, "_quickMode").IsChecked == true);
     }
 
-    private static T Field<T>(Window window, string name) =>
-        (T)typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
-    private static void Set(Window window, string name, object value) =>
-        typeof(MainWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, value);
-    private static object? Invoke(Window window, string name, params object[] arguments) =>
-        typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, arguments);
+    private static async Task CheckConfigurationPage(Window window)
+    {
+        await using var ws = await TestWorkspace.CreateAsync();
+        var parent = ws.Write("NuGet.Config", """<configuration><packageSources><add key="same" value="https://example.test/parent"/></packageSources></configuration>""");
+        var local = ws.Write("project/NuGet.Config", """<configuration><packageSources><clear/><add key="same" value="https://example.test/local"/></packageSources></configuration>""");
+        var editable = true;
+        var saves = 0;
+        var page = new ConfigurationPage(window, message => AppLocalization.Format(message, UiLanguage.English, System.Globalization.CultureInfo.InvariantCulture), () => editable,
+            () => { saves++; return Task.CompletedTask; }, () => { });
+        page.Update(Path.GetDirectoryName(local));
+        var filter = Field<ComboBox>(page, "_files");
+        Assert.Equal(0, filter.SelectedIndex);
+        Assert.False(Field<Button>(page, "_open").IsEnabled);
+        var snapshots = Field<List<ConfigSnapshot>>(page, "_snapshots");
+        Assert.Equal(2, snapshots.Where(s => s.Path == parent || s.Path == local).SelectMany(s => s.Sources).Count(s => s.Name == "same"));
+        var paths = Field<IReadOnlyList<string>>(page, "_paths");
+        filter.SelectedIndex = paths.ToList().IndexOf(local) + 1;
+        Assert.True(Field<Button>(page, "_open").IsEnabled);
+        var rows = Field<StackPanel>(page, "_rows");
+        var row = Assert.IsType<Grid>(Assert.IsType<Border>(rows.Children[1]).Child);
+        Assert.Equal("same", Assert.IsType<TextBlock>(row.Children[0]).Text);
+        Assert.Equal("https://example.test/local", Assert.IsType<TextBlock>(row.Children[1]).Text);
+        Assert.Equal(2, rows.Children.Count);
+        page.Content.Measure(new Size(1280, 720));
+        page.Content.Arrange(new Rect(0, 0, 1280, 720));
+        Assert.InRange(rows.DesiredSize.Width, 1035, 1256);
+        editable = false;
+        page.Update(Path.GetDirectoryName(local));
+        row = Assert.IsType<Grid>(Assert.IsType<Border>(rows.Children[1]).Child);
+        Assert.All(row.Children.OfType<Button>(), button => Assert.False(button.IsEnabled));
+        Assert.All(row.Children.OfType<CheckBox>(), box => Assert.False(box.IsEnabled));
+        editable = true;
+        var snapshot = snapshots.Single(s => s.Path == local);
+        await (Task)Invoke(page, "SaveAsync", snapshot, snapshot.Sources[0], snapshot.Sources[0] with { Enabled = false }, null!, false, false)!;
+        Assert.Equal(1, saves);
+        Assert.False(NuGetConfiguration.Read(local).Sources[0].Enabled);
+        Assert.Equal(paths.ToList().IndexOf(local) + 1, filter.SelectedIndex);
+        await File.AppendAllTextAsync(local, "\n<!--external-->");
+        page.Update(Path.GetDirectoryName(local), reload: true);
+        filter.SelectedIndex = 0;
+        Assert.False(Field<Button>(page, "_open").IsEnabled);
+    }
+
+    private static T Field<T>(object instance, string name) =>
+        (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
+    private static void Set(object instance, string name, object value) =>
+        instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
+    private static object? Invoke(object instance, string name, params object[] arguments) =>
+        instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, arguments);
 }

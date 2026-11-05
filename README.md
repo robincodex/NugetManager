@@ -15,6 +15,8 @@ I like Rider's built-in package manager, but I no longer use Rider very often, s
 ## Features
 
 - Inspect dependencies by solution or project; browse, search, install, uninstall, upgrade, and downgrade NuGet packages. Prerelease versions and batch upgrades are supported.
+- Separate **Packages / NuGet configuration** tabs preserve package selections and queries when switching. Manage source declarations from machine, user, additional user, and workspace-level configuration files; filter by file and open the selected configuration.
+- Add, edit, delete, enable, or disable sources, including username/password and HTTP/TLS options. Edits go back to the owning file; new sources default to the workspace's `NuGet.Config`. Existing passwords are not displayed; leaving the password blank preserves it. New passwords use NuGet-compatible Windows current-user encryption and are not portable across users or machines.
 - Supports Central Package Management (CPM) via `Directory.Packages.props`. Review affected projects and files before changes; unsafe edits, such as conditional references, are explicitly blocked.
 - Optional **Quick Mode** executes a valid plan without confirmation. Safety blocks, failure notifications, and transaction rollback still apply.
 - Failed or cancelled writes attempt to roll back the current batch. If the app exits unexpectedly, recovery is offered on the next launch; detected file conflicts are never overwritten.
@@ -49,7 +51,9 @@ If the root directory contains `.sln` or `.slnx` files, the selected solution de
 
 - Projects are restored when loaded to obtain current dependency state. Existing `packages.lock.json` files use locked mode; read-only loading does not create or modify lock files. A successful restore does not mean the project has compiled.
 - By default, every write previews its impact and requires confirmation; Quick Mode skips confirmation. Central version changes may affect multiple projects. With CPM, uninstalling a package removes only the project reference; its `PackageVersion` is not automatically deleted.
-- Search and package operations use the workspace's `NuGet.Config` and SDK credentials. This app does not manage credentials; configure authentication for private sources in the SDK environment first.
+- Search and package operations use the workspace's `NuGet.Config` and SDK credentials. The configuration tab supports username/password authentication; SDK credential providers remain supported.
+- The **All configurations** view shows raw per-file declarations, including duplicate names and declarations overridden by `<clear/>`; it is not the SDK's effective merged source list. Select a row to open its owning file.
+- Configuration edits preserve unrelated XML, comments, and source mappings. Invalid configurations, duplicate names, permission failures, and detected external changes are reported without elevation or conflict overwrites. Configuration writes and package operations are mutually exclusive; saving refreshes effective sources and package queries. Removing existing credentials or saving unsafe HTTP/TLS settings requires confirmation even in Quick Mode.
 
 ## Build, test, and publish
 
