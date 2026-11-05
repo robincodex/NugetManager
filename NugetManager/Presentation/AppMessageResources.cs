@@ -283,6 +283,7 @@ internal enum TextKey
     M245,
     M246,
     M247,
+    UpdatingDependencies,
 }
 
 internal static partial class AppLocalization

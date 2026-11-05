@@ -568,11 +568,12 @@ internal sealed class MainWindow : Window
 
     private void RenderMiddle(WorkspaceViewState state)
     {
+        var updatingDependencies = _applying || state.IsBusy && state.Status == WorkspaceStatus.Writing;
         var key = _browseMode
             ? (object)(true, state.Workspace, state.Search, state.Browse, state.SearchLoading, state.SearchError,
-                state.SelectedPackageId, state.SelectedPackageSourceName, state.SearchQuery, state.Installed)
+                state.SelectedPackageId, state.SelectedPackageSourceName, state.SearchQuery, state.Installed, updatingDependencies)
             : (false, state.Workspace, state.Upgrades, state.Installed, state.Implicit, state.SdkImplicit, state.SelectedPackageIds,
-                state.SelectedPackageId, state.IsBusy, state.UpdatesComplete, state.Diagnostics, state.Status);
+                state.SelectedPackageId, state.IsBusy, state.UpdatesComplete, state.Diagnostics, state.Status, updatingDependencies);
         if (Equals(key, _middleKey))
         {
             return;
@@ -589,6 +590,8 @@ internal sealed class MainWindow : Window
                 : Muted(L(TextKey.M091))).Margin(4, 12, 4, 0));
             return;
         }
+        if (updatingDependencies)
+            _middle.Add(LoadingLine(_installedRing, L(TextKey.UpdatingDependencies)).Margin(4, 4, 4, 6));
         if (_browseMode)
         {
             RenderSearch(state);
@@ -596,9 +599,9 @@ internal sealed class MainWindow : Window
         }
 
         var model = PresentationModel.BuildPackageList(state);
-        if (PresentationModel.BuildActivity(state, false).InstalledCheck)
+        if (!updatingDependencies && PresentationModel.BuildActivity(state, false).InstalledCheck)
             _middle.Add(LoadingLine(_installedRing, L(TextKey.CheckingUpdates)).Margin(4, 4, 4, 6));
-        else if (model.Notice is { } notice)
+        else if (!updatingDependencies && model.Notice is { } notice)
         {
             var text = Muted(notice).Margin(4, 4, 4, 6);
             if (!state.UpdatesComplete && state.Status != WorkspaceStatus.Loading)

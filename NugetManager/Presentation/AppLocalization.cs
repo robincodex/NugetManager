@@ -104,6 +104,7 @@ internal static partial class AppLocalization
         [TextKey.OpenNuGet] = ["打开 NuGet 页面", "Open NuGet page", "NuGet 페이지 열기", "Открыть страницу NuGet"],
         [TextKey.OpenGitHub] = ["打开 GitHub 仓库", "Open GitHub repository", "GitHub 저장소 열기", "Открыть репозиторий GitHub"],
         [TextKey.CheckingUpdates] = ["正在检测更新…", "Checking for updates…", "업데이트 확인 중…", "Проверка обновлений…"],
+        [TextKey.UpdatingDependencies] = ["正在更新依赖，请耐心等待…", "Updating dependencies, please wait…", "종속성을 업데이트하는 중입니다. 잠시 기다려 주세요…", "Обновление зависимостей, пожалуйста, подождите…"],
         [TextKey.Ready] = ["就绪", "Ready", "준비됨", "Готово"],
         [TextKey.PreferencesReadFailed] = ["无法读取偏好设置，已使用系统默认：{0}", "Cannot read preferences; using system defaults: {0}", "설정을 읽을 수 없어 시스템 기본값을 사용합니다: {0}", "Не удалось прочитать настройки; используются системные: {0}"],
         [TextKey.PreferencesWriteFailed] = ["偏好设置未保存：{0}", "Preferences were not saved: {0}", "설정이 저장되지 않았습니다: {0}", "Настройки не сохранены: {0}"],
