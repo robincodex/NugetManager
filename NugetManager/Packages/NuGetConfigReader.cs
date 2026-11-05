@@ -75,9 +75,22 @@ internal static class NuGetConfigReader
 
     public static NuGetSettings Load(string directory, string? userConfigPath = null)
     {
-        // Lowest priority first, so closer files override and <clear/> drops everything inherited.
+        var files = DiscoverFiles(directory, userConfigPath);
+        return LoadFiles(files);
+    }
+
+    public static IReadOnlyList<string> DiscoverFiles(string directory, string? userConfigPath = null, string? machineConfigDirectory = null)
+    {
         var files = new List<string>();
         var userConfig = userConfigPath ?? DefaultUserConfigPath;
+        // An explicit user path isolates callers (including SDK fixtures) from machine settings.
+        var machine = machineConfigDirectory ?? (userConfigPath is null
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86), "NuGet", "Config") : null);
+        if (machine is not null && Directory.Exists(machine))
+            files.AddRange(Directory.EnumerateFiles(machine, "*.config").Order(StringComparer.OrdinalIgnoreCase));
+        var additional = Path.Combine(Path.GetDirectoryName(userConfig)!, "config");
+        if (Directory.Exists(additional))
+            files.AddRange(Directory.EnumerateFiles(additional, "*.config").Order(StringComparer.OrdinalIgnoreCase));
         if (File.Exists(userConfig))
         {
             files.Add(userConfig);
@@ -93,7 +106,11 @@ internal static class NuGetConfigReader
         }
         chain.Reverse();
         files.AddRange(chain.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(userConfig), StringComparison.OrdinalIgnoreCase)));
+        return files.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
 
+    private static NuGetSettings LoadFiles(IReadOnlyList<string> files)
+    {
         var sources = new List<(string Name, string Location)>();
         var disabled = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var credentials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
