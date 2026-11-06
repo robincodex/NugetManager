@@ -232,7 +232,7 @@ internal sealed class ConfigurationPage(Window owner, Func<UiMessage, string> fo
     private Button IconButton(string path, TextKey tooltip, bool enabled, Func<Task> action) =>
         new Button().Content(new PathShape { ViewBox = new Rect(0, 0, 16, 16) }.Data(path)
             .Fill(AppTheme.Current.Text).Stretch(Stretch.Uniform).Width(16).Height(16).Center())
-            .Padding(0).Width(30).Height(30).Center().ToolTip(L(tooltip)).IsEnabled(enabled).OnClick(() => Run(action));
+            .Padding(0).Width(30).Height(30).Margin(0, 4).Center().ToolTip(L(tooltip)).IsEnabled(enabled).OnClick(() => Run(action));
 }
 
 internal sealed record SourceEditResult(string Path, ConfigSource Source, string? Password, bool RemoveCredentials);
