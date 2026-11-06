@@ -368,6 +368,9 @@ public class NativeWindowBindingTests
         Assert.InRange(rows.DesiredSize.Width, 1035, 1256);
         foreach (var button in row.Children.OfType<Button>())
         {
+            Assert.Equal(new Thickness(0, 4, 0, 4), button.Margin);
+            Assert.True(button.Bounds.Y - row.Bounds.Y >= 4);
+            Assert.True(row.Bounds.Y + row.Bounds.Height - button.Bounds.Y - button.Bounds.Height >= 4);
             var icon = Assert.IsType<PathShape>(button.Content);
             Assert.Equal(new Rect(0, 0, 16, 16), icon.ViewBox);
             Assert.InRange(Math.Abs(icon.Bounds.X + icon.Bounds.Width / 2 - button.Bounds.X - button.Bounds.Width / 2), 0, 0.5);
